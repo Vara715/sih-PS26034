@@ -1,0 +1,25 @@
+{
+  "samples": [
+    {
+      "id": "sample_01_biscuit",
+      "name": "Compliant Wheat Biscuit Label",
+      "category": "food",
+      "expected_verdict": "COMPLIANT",
+      "label_text": "ABC Premium Wheat Biscuits\nNet Qty: 500 g\nMRP Rs. 120.00 (incl. of all taxes)\nMfd Date: 08/2026\nManufactured by ABC Foods Pvt Ltd, Industrial Area, New Delhi - 110020\nConsumer Care Helpline: 1800-111-2222 Email: care@abcfoods.in\nCountry of Origin: India\nUnit Sale Price: Rs 0.24 / g"
+    },
+    {
+      "id": "sample_02_oil",
+      "name": "Non-Compliant Cooking Oil Label (Missing MRP & USP)",
+      "category": "packaged_goods",
+      "expected_verdict": "POTENTIAL NON-COMPLIANCE",
+      "label_text": "Golden Pure Cooking Oil\nNet Quantity: 1 L\nMfd Date: 12/2025\nManufactured by Sunrise Oils Ltd, Plot 45, Industrial Zone, Gujarat\nCustomer Care: care@sunriseoils.com"
+    },
+    {
+      "id": "sample_03_blurry",
+      "name": "Blurry Illegible Label",
+      "category": "packaged_goods",
+      "expected_verdict": "INCONCLUSIVE",
+      "label_text": "l0r3m ip5um 120... [illegible text]"
+    }
+  ]
+}
