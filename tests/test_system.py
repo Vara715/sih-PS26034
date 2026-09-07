@@ -173,6 +173,19 @@ class TestLegalMetrologySystem(unittest.TestCase):
         self.assertEqual(val["status"], "VALID_PRODUCT")
         self.assertTrue(val["should_proceed_to_ocr"])
 
+    def test_11_dual_label_fusion(self):
+        """Tests front and back dual-label text concatenation and declaration extraction."""
+        front_text = "PREMIUM BISCUITS\nNet Qty: 200 g\nMRP Rs. 50.00 (incl. of all taxes)"
+        back_text = "Mfd Date: 05/2026\nManufactured by Sunrise Foods Pvt Ltd\nConsumer Care: 1800-222-3333"
+        combined_text = front_text + "\n--- BACK LABEL ---\n" + back_text
+        extracted = extract_declarations(combined_text)
+
+        self.assertTrue(extracted["mrp"]["detected"])
+        self.assertEqual(extracted["mrp"]["value"], 50.0)
+        self.assertTrue(extracted["manufacturing_date"]["detected"])
+        self.assertEqual(extracted["manufacturing_date"]["date_str"], "05/2026")
+        self.assertTrue(extracted["consumer_care"]["detected"])
+
     def test_12_opencv_synthetic_notebook_image_rejection(self):
         """Tests that a real synthesized PNG image of a notebook page with ruled lines is strictly REJECTED at Gate 1."""
         import cv2
@@ -354,6 +367,114 @@ class TestLegalMetrologySystem(unittest.TestCase):
 
         self.assertTrue(extracted["manufacturer"]["detected"])
         self.assertIn("WAFERS", extracted["manufacturer"]["details"].upper())
+
+    def test_22_fssai_license_extraction(self):
+        """Tests 14-digit FSSAI food safety license number extraction."""
+        sample = "PREMIUM CRUNCH BISCUITS\nFSSAI Lic. No. 10015022000123\nNet Qty: 200 g\nMRP Rs. 40.00"
+        extracted = extract_declarations(sample)
+        self.assertTrue(extracted["fssai_license"]["detected"])
+        self.assertEqual(extracted["fssai_license"]["license_number"], "10015022000123")
+        self.assertEqual(extracted["fssai_license"]["status"], "VERIFIED")
+
+    def test_23_batch_number_extraction(self):
+        """Tests Batch and Lot code extraction under Rule 6(1)(e)."""
+        sample = "Batch No: B-9021/A\nLot No: LT-450\nMRP Rs 25.00"
+        extracted = extract_declarations(sample)
+        self.assertTrue(extracted["batch_number"]["detected"])
+        self.assertEqual(extracted["batch_number"]["batch_number"], "B-9021/A")
+
+    def test_24_hindi_label_extraction(self):
+        """Tests extraction on Hindi/Devanagari commodity declarations."""
+        sample = "अधिकतम खुदरा मूल्य ₹ 120.00 (सभी करों सहित)\nशुद्ध मात्रा: 500 ग्राम\nउत्पाद: बिस्कुट\nभारत में निर्मित"
+        extracted = extract_declarations(sample)
+        self.assertTrue(extracted["mrp"]["detected"])
+        self.assertEqual(extracted["mrp"]["value"], 120.0)
+        self.assertTrue(extracted["net_quantity"]["detected"])
+        self.assertEqual(extracted["net_quantity"]["value"], 500.0)
+        self.assertEqual(extracted["country_of_origin"]["country"], "India")
+
+    def test_25_pdf_certificate_generation(self):
+        """Tests pure-Python PDF Inspection Certificate generation."""
+        from reporting.pdf_report import generate_inspection_pdf
+        scan_data = {
+            "inspection_id": "INS-CERT-99",
+            "product_category": "food",
+            "compliance_report": {
+                "overall_status": "COMPLIANT",
+                "verdict_title": "Legal Metrology Confirmed",
+                "rule_results": [
+                    {"rule_clause": "Rule 6(1)(f)", "target_field": "mrp", "status": "PASS", "evidence_text": "Rs. 100"}
+                ]
+            },
+            "quality_assessment": {"blur_score": 150.0, "quality_rating": "EXCELLENT", "resolution": "1920x1080"},
+            "evidence_ledger": {"evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+        }
+        pdf = generate_inspection_pdf(scan_data)
+        self.assertIsInstance(pdf, bytes)
+        self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        self.assertTrue(pdf.strip().endswith(b"%%EOF"))
+
+    def test_26_barcode_scanner_module(self):
+        """Tests barcode and QR code scanner returns expected structure without exceptions."""
+        from cv.barcode_scanner import scan_barcodes_and_qr
+        import numpy as np
+        import cv2
+
+        img = np.full((200, 200, 3), 255, dtype=np.uint8)
+        _, png_bytes = cv2.imencode('.png', img)
+        res = scan_barcodes_and_qr(png_bytes.tobytes())
+        self.assertIn("detected", res)
+        self.assertIn("qr_codes", res)
+        self.assertIn("barcodes", res)
+        self.assertIsInstance(res["raw_codes"], list)
+
+    def test_27_rule9_readability_analysis(self):
+        """Tests Rule 9 font height and legibility analysis."""
+        from cv.readability import analyze_font_readability
+        tokens = [
+            {"text": "MRP", "bbox": [10, 10, 50, 40]},
+            {"text": "120.00", "bbox": [55, 10, 100, 40]},
+            {"text": "Net", "bbox": [10, 50, 40, 80]},
+            {"text": "500", "bbox": [45, 50, 80, 80]},
+            {"text": "g", "bbox": [85, 50, 100, 80]}
+        ]
+        res = analyze_font_readability(tokens, image_shape=(1000, 1000, 3), net_quantity_val=500.0, net_quantity_unit="g")
+        self.assertTrue(res["evaluated"])
+        self.assertIn("avg_token_height_px", res)
+        self.assertEqual(res["avg_token_height_px"], 30.0)
+        self.assertTrue(res["rule_9_compliant"])
+
+    def test_28_jwt_authentication_token(self):
+        """Tests standard library JWT generation, validation, and tamper-resistance."""
+        from database.db import create_access_token, decode_access_token
+        claims = {"user_id": 42, "role": "inspector", "email": "officer@gov.in"}
+        token = create_access_token(claims, expires_in=3600)
+        self.assertIsInstance(token, str)
+
+        decoded = decode_access_token(token)
+        self.assertIsNotNone(decoded)
+        self.assertEqual(decoded["user_id"], 42)
+        self.assertEqual(decoded["role"], "inspector")
+
+        # Test tampered token rejection
+        parts = token.split(".")
+        tampered_token = parts[0] + "." + parts[1] + "X." + parts[2]
+        self.assertIsNone(decode_access_token(tampered_token))
+
+    def test_29_fail_closed_corrupted_image(self):
+        """Tests that corrupted non-text binary payloads fail-closed in image quality analysis."""
+        corrupted_bytes = bytes([0x00, 0x12, 0xFE, 0x00, 0x00, 0x00, 0x89, 0xFF] * 20)
+        assessment = assess_image_quality(corrupted_bytes)
+        self.assertFalse(assessment["is_valid_image"])
+        self.assertFalse(assessment["is_readable"])
+        self.assertEqual(assessment["quality_rating"], "INVALID_IMAGE_PAYLOAD")
+
+    def test_30_inspection_pagination(self):
+        """Tests inspection audit ledger offset pagination."""
+        from database.db import get_all_inspections
+        p1 = get_all_inspections(limit=3, offset=0)
+        self.assertIsInstance(p1, list)
+        self.assertLessEqual(len(p1), 3)
 
 
 if __name__ == "__main__":

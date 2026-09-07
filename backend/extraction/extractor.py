@@ -100,7 +100,9 @@ def extract_declarations(text: str, tokens: Optional[List[Dict[str, Any]]] = Non
         "consumer_care": extract_consumer_care_evidence(text, normalized_text, tokens),
         "country_of_origin": extract_country_of_origin_evidence(text, normalized_text, tokens),
         "generic_name": extract_generic_name_evidence(lines, tokens),
-        "unit_sale_price": extract_unit_sale_price_evidence(text, normalized_text, tokens)
+        "unit_sale_price": extract_unit_sale_price_evidence(text, normalized_text, tokens),
+        "fssai_license": extract_fssai_evidence(text, normalized_text, tokens),
+        "batch_number": extract_batch_number_evidence(text, normalized_text, tokens)
     }
 
     return extracted
@@ -133,7 +135,7 @@ def extract_mrp_evidence(text: str, normalized: str, tokens: List[Dict[str, Any]
     Disambiguates ₹5.00 vs distant noise (8500), excludes date/weight digits, and handles MRP5.00.
     """
     # Step A: Identify MRP Anchor Tokens
-    mrp_anchor_pattern = r"(?:M\.?R\.?P\.?|Maximum\s+Retail\s+Price|MAX\s+RETAIL\s+PRICE)"
+    mrp_anchor_pattern = r"(?:M\.?R\.?P\.?|Maximum\s+Retail\s+Price|MAX\s+RETAIL\s+PRICE|अधिकतम\s*खुदरा\s*मूल्य|एम\.?आर\.?पी\.?|खुदरा\s*मूल्य|मूल्य|अधिकतम)"
     anchors = []
     
     for t in tokens:
@@ -154,7 +156,7 @@ def extract_mrp_evidence(text: str, normalized: str, tokens: List[Dict[str, Any]
         if is_non_monetary_token(txt):
             continue
         # Skip pure anchor tokens with no numbers attached
-        if re.search(r"^(?:M\.?R\.?P\.?|Maximum|Retail|Price)$", txt, re.IGNORECASE):
+        if re.search(r"^(?:M\.?R\.?P\.?|Maximum|Retail|Price|मूल्य|खुदरा|अधिकतम)$", txt, re.IGNORECASE):
             continue
 
         match = re.search(r"(?:Rs\.?|₹|INR)?\s*(\d+(?:\.\d{1,2})?)", txt, re.IGNORECASE)
@@ -598,20 +600,27 @@ def extract_manufacturer_evidence(text: str, lines: list, tokens: List[Dict[str,
 # -------------------------------------------------------------------------
 def extract_net_quantity_evidence(text: str, normalized: str, tokens: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Extracts Net Quantity / Net Weight with spatial anchor verification."""
-    pattern_direct = r"(?:Net\s*(?:Qty|Quantity|Wt|Weight|Vol|Volume|Contents)|NET\s*WEIGHT|NET\s*WT|NET\s*QTY)\s*[:\-\s]*(\d+(?:\.\d+)?)\s*(g|gm|gms|gram|grams|kg|kgs|ml|l|ltr|litre|litres|m|cm|mm|n|pc|pcs|units?)\b"
+    # Note: \b fails after Devanagari Unicode characters; use (?:\b|(?=[^0-9A-Za-z])|$) instead
+    _unit_group = r"(g|gm|gms|gram|grams|kg|kgs|ml|l|ltr|litre|litres|m|cm|mm|n|pc|pcs|units?|ग्राम|किग्रा|मिली|लीटर)"
+    _unit_boundary = r"(?:\b|(?=[^0-9A-Za-z\u0900-\u097F])|$)"
+    pattern_direct = (
+        r"(?:Net\s*(?:Qty|Quantity|Wt|Weight|Vol|Volume|Contents)|NET\s*WEIGHT|NET\s*WT|NET\s*QTY"
+        r"|शुद्ध\s*मात्रा|मात्रा|वजन)"
+        r"\s*[:\-\s]*(\d+(?:\.\d+)?)\s*" + _unit_group + _unit_boundary
+    )
     match = re.search(pattern_direct, normalized, re.IGNORECASE)
 
     if match:
         val = float(match.group(1))
-        unit = match.group(2).lower()
-        if unit in ["gm", "gms", "gram", "grams"]:
-            unit = "g"
-        elif unit in ["kgs"]:
-            unit = "kg"
-        elif unit in ["ltr", "litre", "litres"]:
-            unit = "l"
-        elif unit in ["pc", "pcs", "units"]:
-            unit = "N"
+        raw_unit = match.group(2).lower()
+        unit_map = {
+            "gm": "g", "gms": "g", "gram": "g", "grams": "g", "ग्राम": "g",
+            "kgs": "kg", "किग्रा": "kg",
+            "ltr": "l", "litre": "l", "litres": "l", "लीटर": "l",
+            "मिली": "ml",
+            "pc": "N", "pcs": "N", "units": "N"
+        }
+        unit = unit_map.get(raw_unit, raw_unit)
 
         return {
             "detected": True,
@@ -623,16 +632,22 @@ def extract_net_quantity_evidence(text: str, normalized: str, tokens: List[Dict[
             "evidence_reason": f"Net Quantity {val} {unit} verified with explicit quantity declaration."
         }
 
-    has_net_keyword = bool(re.search(r"\b(?:Net\s*(?:Qty|Quantity|Wt|Weight|Vol|Volume|Contents)|NET\s*WEIGHT|NET\s*WT|NET\s*QTY)\b", normalized, re.IGNORECASE))
+    has_net_keyword = bool(re.search(
+        r"(?:\b|^)(?:Net\s*(?:Qty|Quantity|Wt|Weight|Vol|Volume|Contents)|NET\s*WEIGHT|NET\s*WT|NET\s*QTY|शुद्ध\s*मात्रा|वजन)(?:\b|(?=[^A-Za-z0-9\u0900-\u097F])|$)",
+        normalized, re.IGNORECASE))
     if has_net_keyword:
-        unit_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(g|gm|gms|gram|grams|kg|kgs|ml|l|ltr|litre|litres|m|cm|mm|n|pc|pcs|units?)\b", normalized, re.IGNORECASE)
+        unit_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(g|gm|gms|gram|grams|kg|kgs|ml|l|ltr|litre|litres|m|cm|mm|n|pc|pcs|units?|ग्राम|किग्रा|मिली|लीटर)\b", normalized, re.IGNORECASE)
         if unit_match:
             val = float(unit_match.group(1))
-            unit = unit_match.group(2).lower()
-            if unit in ["gm", "gms", "gram", "grams"]:
-                unit = "g"
-            elif unit in ["kgs"]:
-                unit = "kg"
+            raw_unit = unit_match.group(2).lower()
+            unit_map = {
+                "gm": "g", "gms": "g", "gram": "g", "grams": "g", "ग्राम": "g",
+                "kgs": "kg", "किग्रा": "kg",
+                "ltr": "l", "litre": "l", "litres": "l", "लीटर": "l",
+                "मिली": "ml",
+                "pc": "N", "pcs": "N", "units": "N"
+            }
+            unit = unit_map.get(raw_unit, raw_unit)
 
             return {
                 "detected": True,
@@ -677,15 +692,31 @@ def extract_consumer_care_evidence(text: str, normalized: str, tokens: List[Dict
             "evidence_reason": "Consumer Care contact details verified adjacent to customer helpline anchor."
         }
     elif phone_match or email_match:
-        return {
-            "detected": True,
-            "status": "VERIFIED",
-            "phone": phone_match.group(0) if phone_match else None,
-            "email": email_match.group(0) if email_match else None,
-            "has_grievance_contact": True,
-            "raw_text": (phone_match.group(0) if phone_match else "") + (" " + email_match.group(0) if email_match else ""),
-            "evidence_reason": "Helpline phone number or email address detected."
-        }
+        phone_txt = phone_match.group(0) if phone_match else ""
+        email_txt = email_match.group(0) if email_match else ""
+        is_toll_free = "1800" in phone_txt
+        is_care_email = any(w in email_txt.lower() for w in ["care", "help", "support", "grievance", "customercare"])
+
+        if is_toll_free or is_care_email:
+            return {
+                "detected": True,
+                "status": "VERIFIED",
+                "phone": phone_match.group(0) if phone_match else None,
+                "email": email_match.group(0) if email_match else None,
+                "has_grievance_contact": True,
+                "raw_text": (phone_match.group(0) if phone_match else "") + (" " + email_match.group(0) if email_match else ""),
+                "evidence_reason": "Dedicated consumer care toll-free helpline or support email verified."
+            }
+        else:
+            return {
+                "detected": False,
+                "status": "INCONCLUSIVE",
+                "phone": phone_match.group(0) if phone_match else None,
+                "email": email_match.group(0) if email_match else None,
+                "has_grievance_contact": False,
+                "raw_text": (phone_match.group(0) if phone_match else "") + (" " + email_match.group(0) if email_match else ""),
+                "evidence_reason": "General contact number/email detected, but lacks explicit consumer care / grievance redressal anchor context."
+            }
 
     return {
         "detected": False,
@@ -699,7 +730,7 @@ def extract_consumer_care_evidence(text: str, normalized: str, tokens: List[Dict
 
 def extract_country_of_origin_evidence(text: str, normalized: str, tokens: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Extracts Country of Origin declaration."""
-    pattern = r"(?:Country\s+of\s+Origin|Made\s+in|Product\s+of)\s*[:\-\s]*([A-Za-z]+)"
+    pattern = r"(?:Country\s+of\s+Origin|Made\s+in|Product\s+of|उत्पत्ति\s*का\s*देश|भारत\s*में\s*निर्मित)\s*[:\-\s]*([A-Za-z]+)"
     match = re.search(pattern, normalized, re.IGNORECASE)
 
     if match:
@@ -712,7 +743,7 @@ def extract_country_of_origin_evidence(text: str, normalized: str, tokens: List[
             "evidence_reason": f"Country of Origin '{country}' verified."
         }
 
-    if re.search(r"product\s+of\s+india|made\s+in\s+india", normalized, re.IGNORECASE):
+    if re.search(r"product\s+of\s+india|made\s+in\s+india|भारत\s*में\s*निर्मित", normalized, re.IGNORECASE):
         return {
             "detected": True,
             "status": "VERIFIED",
@@ -732,7 +763,7 @@ def extract_country_of_origin_evidence(text: str, normalized: str, tokens: List[
 
 def extract_generic_name_evidence(lines: list, tokens: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Extracts Generic Commodity Name."""
-    pattern = r"(?:Generic\s+Name|Common\s+Name|Product\s+Name|Commodity)\s*[:\-\s]*(.+)"
+    pattern = r"(?:Generic\s+Name|Common\s+Name|Product\s+Name|Commodity|उत्पाद|सामग्री)\s*[:\-\s]*(.+)"
 
     for line in lines:
         # Skip header lines
@@ -748,7 +779,12 @@ def extract_generic_name_evidence(lines: list, tokens: List[Dict[str, Any]]) -> 
                 "evidence_reason": f"Generic commodity name '{match.group(1).strip()}' verified."
             }
 
-    categories = ["NAMKEEN", "BHUJIA", "BISCUIT", "BISCUITS", "COOKIE", "COOKIES", "CHIP", "CHIPS", "WAFER", "WAFERS", "SNACK", "SNACKS", "OIL", "FLOUR", "TEA", "COFFEE", "CHOCOLATE", "NOODLE", "PASTA", "JUICE", "MILK", "SPICE", "MASALA"]
+    categories = [
+        "NAMKEEN", "BHUJIA", "BISCUIT", "BISCUITS", "COOKIE", "COOKIES", "CHIP", "CHIPS", "WAFER", "WAFERS",
+        "SNACK", "SNACKS", "OIL", "FLOUR", "TEA", "COFFEE", "CHOCOLATE", "NOODLE", "PASTA", "JUICE", "MILK",
+        "SPICE", "MASALA", "SOAP", "SHAMPOO", "DETERGENT", "TOOTHPASTE", "ATTA", "RICE", "SALT", "SUGAR",
+        "नमकीन", "भुजिया", "बिस्कुट", "चिप्स", "वेफर्स", "तेल", "चाय", "कॉफी", "आटा", "मसाला"
+    ]
     for line in lines:
         clean = line.strip().upper()
         if re.search(r"^(?:---|===|___|\*\*\*|BACK\s+LABEL|FRONT\s+LABEL|SCAN|INSPECTION)", clean):
@@ -763,9 +799,17 @@ def extract_generic_name_evidence(lines: list, tokens: List[Dict[str, Any]]) -> 
                     "evidence_reason": f"Standard commodity category '{clean}' verified."
                 }
 
+    disallowed_noise = [
+        "chapter", "study", "notes", "homework", "question", "answer", "lecture",
+        "barcode", "scan", "disclaimer", "nutrition", "ingredients", "contains",
+        "allergen", "storage", "store in", "keep away", "licence", "license", "regd"
+    ]
+
     for line in lines[:5]:
         clean_line = line.strip()
         if re.search(r"^(?:---|===|___|\*\*\*|BACK\s+LABEL|FRONT\s+LABEL|SCAN|INSPECTION)", clean_line, re.IGNORECASE):
+            continue
+        if any(noise in clean_line.lower() for noise in disallowed_noise):
             continue
         if 3 <= len(clean_line) <= 40 and not re.search(r"[()\[\]{}:=$₹#@!*+?<>/\\]", clean_line):
             if re.search(r"[a-zA-Z]{3,}", clean_line):
@@ -831,4 +875,77 @@ def extract_dimensions_evidence(text: str, normalized: str, tokens: List[Dict[st
         "size_str": None,
         "raw_text": None,
         "evidence_reason": "Package dimensions / size declaration not detected."
+    }
+
+
+def extract_fssai_evidence(text: str, normalized: str, tokens: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Extracts 14-digit FSSAI Food Safety and Standards Authority of India License Number.
+    Under FSSAI (Packaging and Labelling) Regulations, food packages must declare the 14-digit license number.
+    """
+    fssai_anchor_pattern = r"(?:fssai|lic\.?\s*no\.?|licence\s*no\.?|license\s*no\.?|fssai\s*lic\.?\s*no\.?)\s*[:\-\s]*([0-9]{14})\b"
+    match = re.search(fssai_anchor_pattern, normalized, re.IGNORECASE)
+    if match:
+        lic_no = match.group(1)
+        return {
+            "detected": True,
+            "status": "VERIFIED",
+            "license_number": lic_no,
+            "raw_text": match.group(0),
+            "evidence_reason": f"FSSAI License number '{lic_no}' verified adjacent to official FSSAI/Lic anchor."
+        }
+
+    # Contextual check: 14 consecutive digits in presence of FSSAI keyword
+    has_fssai_word = bool(re.search(r"\bfssai\b", normalized, re.IGNORECASE))
+    digits_14 = re.findall(r"\b([0-9]{14})\b", normalized)
+    if digits_14 and has_fssai_word:
+        return {
+            "detected": True,
+            "status": "VERIFIED",
+            "license_number": digits_14[0],
+            "raw_text": f"FSSAI {digits_14[0]}",
+            "evidence_reason": f"FSSAI 14-digit license number '{digits_14[0]}' verified with FSSAI context."
+        }
+    elif digits_14:
+        return {
+            "detected": True,
+            "status": "VERIFIED",
+            "license_number": digits_14[0],
+            "raw_text": digits_14[0],
+            "evidence_reason": f"Candidate 14-digit regulatory license number '{digits_14[0]}' detected."
+        }
+
+    return {
+        "detected": False,
+        "status": "INCONCLUSIVE",
+        "license_number": None,
+        "raw_text": None,
+        "evidence_reason": "FSSAI License number declaration not detected on package label."
+    }
+
+
+def extract_batch_number_evidence(text: str, normalized: str, tokens: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Extracts Batch / Lot / Consignment code number under Legal Metrology Rule 6(1)(e).
+    """
+    pattern = r"(?:Batch\s*(?:No|Number|\.)?|Lot\s*(?:No|Number|\.)?|B\.?\s*No\.?|Batch\/Lot|Code\s*No\.?)\s*[:\-\s]*([A-Za-z0-9\-\/]+)"
+    match = re.search(pattern, normalized, re.IGNORECASE)
+    if match:
+        batch_val = match.group(1).strip().strip(",. ;:-")
+        # Ensure not an MRP or date confusion
+        if len(batch_val) >= 2 and not re.match(r"^(?:Rs|INR|\d{2}\/\d{4})$", batch_val, re.IGNORECASE):
+            return {
+                "detected": True,
+                "status": "VERIFIED",
+                "batch_number": batch_val,
+                "raw_text": match.group(0),
+                "evidence_reason": f"Batch / Lot identification code '{batch_val}' verified."
+            }
+
+    return {
+        "detected": False,
+        "status": "INCONCLUSIVE",
+        "batch_number": None,
+        "raw_text": None,
+        "evidence_reason": "Batch or Lot identification number declaration not detected."
     }

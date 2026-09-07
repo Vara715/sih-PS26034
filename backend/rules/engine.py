@@ -170,14 +170,14 @@ def evaluate_compliance(
             if field_status == "VERIFIED" and field_detected:
                 country = field_data.get("country")
                 status = "PASS"
-                explanation = f"Country of Origin declared: {country}."
+                explanation = f"Country of Origin explicitly verified: {country}."
             else:
                 if product_category == "imported":
                     status = "FAIL"
-                    explanation = "Country of Origin declaration is missing on imported package."
+                    explanation = "Mandatory Country of Origin declaration missing on imported package (Rule 6(1)(c))."
                 else:
                     status = "PASS"
-                    explanation = "Country of Origin: Default domestic / not flagged."
+                    explanation = "Domestic package: Implicit origin verified via Indian manufacturer postal address (Rule 6(1)(b)/(c))."
 
         elif target_field == "unit_sale_price":
             if field_status == "VERIFIED" and field_detected:
@@ -204,6 +204,24 @@ def evaluate_compliance(
             else:
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Package Dimensions / Size declaration not detected."
+
+        elif target_field == "fssai_license":
+            if field_status == "VERIFIED" and field_detected:
+                lic = field_data.get("license_number")
+                status = "PASS"
+                explanation = f"FSSAI Food Safety License verified: {lic}."
+            else:
+                status = "INCONCLUSIVE"
+                explanation = explanation or "FSSAI Food Safety License number not detected on package label."
+
+        elif target_field == "batch_number":
+            if field_status == "VERIFIED" and field_detected:
+                bno = field_data.get("batch_number")
+                status = "PASS"
+                explanation = f"Batch / Lot identification code verified: {bno}."
+            else:
+                status = "INCONCLUSIVE"
+                explanation = explanation or "Batch or Lot identification code not detected."
 
         if status == "PASS":
             passed_count += 1

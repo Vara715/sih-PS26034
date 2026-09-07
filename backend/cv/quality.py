@@ -47,10 +47,16 @@ def assess_image_quality(image_bytes: bytes) -> Dict[str, Any]:
                 blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
                 brightness_score = float(np.mean(gray))
 
+                # Contrast (Standard Deviation)
+                contrast_score = float(np.std(gray))
+                # Glare / Specular highlight detection
+                glare_ratio = float(np.sum(gray >= 252)) / float(width * height)
+
                 CRITICAL_BLUR = 35.0
                 BLUR_THRESHOLD = 80.0
                 MIN_BRIGHTNESS = 40.0
                 MAX_BRIGHTNESS = 230.0
+                MIN_CONTRAST = 25.0
 
                 is_readable = True
                 issues = []
@@ -66,10 +72,19 @@ def assess_image_quality(image_bytes: bytes) -> Dict[str, Any]:
                 elif brightness_score > MAX_BRIGHTNESS:
                     issues.append("Image is overexposed")
 
-                if blur_score >= 120 and MIN_BRIGHTNESS <= brightness_score <= MAX_BRIGHTNESS:
+                if contrast_score < MIN_CONTRAST:
+                    issues.append("Low contrast between text and background")
+
+                if glare_ratio > 0.08:
+                    issues.append("Significant surface glare/reflection")
+
+                if width < 500 or height < 500:
+                    issues.append("Low image resolution")
+
+                if blur_score >= 120 and MIN_BRIGHTNESS <= brightness_score <= MAX_BRIGHTNESS and len(issues) == 0:
                     quality_rating = "EXCELLENT"
                     message = "Image is sharp and clear for reliable OCR extraction."
-                elif is_readable and len(issues) == 0:
+                elif is_readable and len(issues) <= 1:
                     quality_rating = "GOOD"
                     message = "Image quality is suitable for compliance checking."
                 elif is_readable:
@@ -84,20 +99,46 @@ def assess_image_quality(image_bytes: bytes) -> Dict[str, Any]:
                     "is_readable": is_readable,
                     "blur_score": round(blur_score, 2),
                     "brightness_score": round(brightness_score, 2),
+                    "contrast_score": round(contrast_score, 2),
                     "resolution": f"{width}x{height}",
                     "quality_rating": quality_rating,
                     "issues": issues,
                     "message": message
                 }
-        except Exception:
+        except Exception as e:
             pass
 
-    # Pure Python Fallback Assessment (when image is passed as text or OpenCV is installing)
+    # Inspection of non-OpenCV or text buffer payload
     text_sample = ""
+    is_text = False
     try:
-        text_sample = image_bytes.decode("utf-8", errors="ignore")
-    except Exception:
-        text_sample = ""
+        text_sample = image_bytes.decode("utf-8")
+        is_text = True
+    except UnicodeDecodeError:
+        try:
+            text_sample = image_bytes.decode("utf-8", errors="ignore")
+            # If over 20% null bytes or unprintable, it's corrupted binary, not text
+            null_count = image_bytes.count(b'\x00')
+            if null_count > len(image_bytes) * 0.05:
+                is_text = False
+            else:
+                is_text = True
+        except Exception:
+            is_text = False
+
+    if not is_text:
+        # Corrupted binary image payload — FAIL-CLOSED
+        return {
+            "is_valid_image": False,
+            "is_readable": False,
+            "blur_score": 0.0,
+            "brightness_score": 0.0,
+            "contrast_score": 0.0,
+            "resolution": "0x0",
+            "quality_rating": "INVALID_IMAGE_PAYLOAD",
+            "issues": ["Unrecognized or corrupted image binary format"],
+            "message": "Corrupted or unrecognized image payload. Please upload a standard image file (JPEG, PNG, WebP)."
+        }
 
     if "blurry" in text_sample.lower() or "illegible" in text_sample.lower():
         return {
@@ -105,7 +146,8 @@ def assess_image_quality(image_bytes: bytes) -> Dict[str, Any]:
             "is_readable": False,
             "blur_score": 25.0,
             "brightness_score": 128.0,
-            "resolution": "800x600",
+            "contrast_score": 50.0,
+            "resolution": "N/A (Synthetic Buffer)",
             "quality_rating": "POOR",
             "issues": ["Severe blur detected"],
             "message": "Unreliable image quality: Severe blur detected. Please retake photo."
@@ -116,8 +158,9 @@ def assess_image_quality(image_bytes: bytes) -> Dict[str, Any]:
         "is_readable": True,
         "blur_score": 150.0,
         "brightness_score": 128.0,
-        "resolution": "1920x1080",
-        "quality_rating": "EXCELLENT",
+        "contrast_score": 60.0,
+        "resolution": "N/A (Synthetic Buffer)",
+        "quality_rating": "SYNTHETIC_TEXT",
         "issues": [],
-        "message": "Image quality is sharp and suitable for compliance evaluation."
+        "message": "Direct label text evaluation mode (Physical image metrics not applicable)."
     }

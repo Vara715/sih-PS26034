@@ -7,12 +7,23 @@ to guarantee audit trail integrity.
 
 import sqlite3
 import hashlib
+import hmac
+import base64
+import time
+import secrets
 import json
 import os
+import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
+logger = logging.getLogger("legal_metrology.database")
+
 DB_FILE_PATH = os.path.join(os.path.dirname(__file__), "inspections.db")
+JWT_SECRET = os.getenv("JWT_SECRET", "legal_metrology_sih26034_secret_key_2026")
+JWT_EXPIRATION_SECONDS = 86400 * 7  # 7-day session token
+
+_DB_INITIALIZED = False
 
 
 def get_db_connection():
@@ -22,8 +33,12 @@ def get_db_connection():
     return conn
 
 
-def init_db():
-    """Initializes database tables if they do not exist."""
+def init_db(force: bool = False):
+    """Initializes database tables if they do not exist (cached to avoid redundant per-query calls)."""
+    global _DB_INITIALIZED
+    if _DB_INITIALIZED and not force:
+        return
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -60,19 +75,84 @@ def init_db():
     conn.commit()
     conn.close()
 
+    _DB_INITIALIZED = True
+
     # Seed default demo accounts if users table is empty
     seed_default_users()
 
 
 def hash_password(password: str) -> str:
-    """Hashes password using SHA-256 with static salt."""
-    salted = f"legal_metrology_salt_{password}"
-    return hashlib.sha256(salted.encode("utf-8")).hexdigest()
+    """Hashes password using PBKDF2-HMAC-SHA256 with cryptographic per-user salt."""
+    salt = secrets.token_hex(16)
+    iterations = 100000
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), iterations)
+    return f"pbkdf2:sha256:{iterations}:{salt}:{key.hex()}"
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
-    """Verifies plain password against hash."""
-    return hash_password(plain_password) == password_hash
+    """Verifies plain password against PBKDF2 hash or legacy SHA-256 hash."""
+    if not password_hash or not plain_password:
+        return False
+    try:
+        if password_hash.startswith("pbkdf2:sha256:"):
+            parts = password_hash.split(":")
+            if len(parts) == 5:
+                _, _, iters_str, salt_hex, hash_hex = parts
+                computed = hashlib.pbkdf2_hmac(
+                    "sha256", plain_password.encode("utf-8"), bytes.fromhex(salt_hex), int(iters_str)
+                ).hex()
+                return hmac.compare_digest(computed, hash_hex)
+        # Backward-compatible check for legacy SHA-256 hash
+        legacy_hash = hashlib.sha256(f"legal_metrology_salt_{plain_password}".encode("utf-8")).hexdigest()
+        return hmac.compare_digest(legacy_hash, password_hash)
+    except Exception as e:
+        logger.warning(f"Password verification error: {e}")
+        return False
+
+
+def create_access_token(data: dict, expires_in: int = JWT_EXPIRATION_SECONDS) -> str:
+    """Generates standard HS256 JWT token using Python standard library without external dependencies."""
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = dict(data)
+    payload["exp"] = int(time.time()) + expires_in
+    payload["iat"] = int(time.time())
+
+    header_b64 = base64.urlsafe_b64encode(json.dumps(header, separators=(',', ':')).encode()).decode().rstrip("=")
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip("=")
+
+    signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+    sig = hmac.new(JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
+    return f"{header_b64}.{payload_b64}.{sig_b64}"
+
+
+def decode_access_token(token: str) -> Optional[dict]:
+    """Decodes and validates standard HS256 JWT token."""
+    if not token or not isinstance(token, str):
+        return None
+    try:
+        parts = token.strip().split(".")
+        if len(parts) != 3:
+            return None
+        header_b64, payload_b64, sig_b64 = parts
+        signing_input = f"{header_b64}.{payload_b64}".encode("utf-8")
+        expected_sig = hmac.new(JWT_SECRET.encode("utf-8"), signing_input, hashlib.sha256).digest()
+
+        sig_padding = (4 - len(sig_b64) % 4) % 4
+        sig_bytes = base64.urlsafe_b64decode(sig_b64 + "=" * sig_padding)
+        if not hmac.compare_digest(expected_sig, sig_bytes):
+            return None
+
+        payload_padding = (4 - len(payload_b64) % 4) % 4
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * payload_padding)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except Exception as e:
+        logger.debug(f"JWT decode error: {e}")
+        return None
 
 
 def seed_default_users():
@@ -84,10 +164,15 @@ def seed_default_users():
 
     if count == 0:
         now = datetime.now().isoformat()
+        # Credentials configurable via environment variables
+        officer_pwd = os.getenv("DEMO_OFFICER_PASSWORD", "officer123")
+        consumer_pwd = os.getenv("DEMO_CONSUMER_PASSWORD", "consumer123")
+        mfg_pwd = os.getenv("DEMO_MFG_PASSWORD", "mfg123")
+
         defaults = [
-            ("Inspector Sharma", "officer@metrology.gov.in", hash_password("officer123"), "inspector", "INS-8021-GOI", now),
-            ("Rahul Citizen", "consumer@metrology.gov.in", hash_password("consumer123"), "public", "PUBLIC-USER", now),
-            ("ABC Packaging Ltd", "manufacturer@abcfoods.in", hash_password("mfg123"), "manufacturer", "LMO-2026-DEL-049", now)
+            ("Inspector Sharma", "officer@metrology.gov.in", hash_password(officer_pwd), "inspector", "INS-8021-GOI", now),
+            ("Rahul Citizen", "consumer@metrology.gov.in", hash_password(consumer_pwd), "public", "PUBLIC-USER", now),
+            ("ABC Packaging Ltd", "manufacturer@abcfoods.in", hash_password(mfg_pwd), "manufacturer", "LMO-2026-DEL-049", now)
         ]
         cursor.executemany("""
             INSERT INTO users (username, email, password_hash, role, badge_or_license, created_at)
@@ -121,12 +206,20 @@ def create_user(username: str, email: str, password: str, role: str, badge_or_li
     conn.commit()
     conn.close()
 
+    token = create_access_token({
+        "user_id": user_id,
+        "username": username.strip(),
+        "email": email_lower,
+        "role": role
+    })
+
     return {
         "id": user_id,
         "username": username.strip(),
         "email": email_lower,
         "role": role,
-        "badge_or_license": badge_or_license.strip()
+        "badge_or_license": badge_or_license.strip(),
+        "access_token": token
     }
 
 
@@ -147,12 +240,20 @@ def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
     if not verify_password(password, user_row["password_hash"]):
         return None
 
+    token = create_access_token({
+        "user_id": user_row["id"],
+        "username": user_row["username"],
+        "email": user_row["email"],
+        "role": user_row["role"]
+    })
+
     return {
         "id": user_row["id"],
         "username": user_row["username"],
         "email": user_row["email"],
         "role": user_row["role"],
-        "badge_or_license": user_row["badge_or_license"]
+        "badge_or_license": user_row["badge_or_license"],
+        "access_token": token
     }
 
 
@@ -221,13 +322,16 @@ def save_inspection(
     }
 
 
-def get_all_inspections(limit: int = 50) -> List[Dict[str, Any]]:
-    """Retrieves recent inspection history."""
+def get_all_inspections(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Retrieves recent inspection history with offset pagination."""
     init_db()
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM inspections WHERE id NOT LIKE 'TEST-%' ORDER BY timestamp DESC LIMIT ?", (limit,))
+    cursor.execute(
+        "SELECT * FROM inspections WHERE id NOT LIKE 'TEST-%' ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+        (limit, offset)
+    )
     rows = cursor.fetchall()
     conn.close()
 

@@ -39,18 +39,24 @@ except ImportError:
 # OCR ENGINE INITIALIZATIONS
 # -------------------------------------------------------------------------
 
-# PyTesseract Check
+# Cross-Platform PyTesseract Check
 TESSERACT_AVAILABLE = False
 try:
     import pytesseract
-    tesseract_paths = [
-        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe")
-    ]
     found_bin = shutil.which("tesseract")
     if not found_bin:
-        for p in tesseract_paths:
+        unix_paths = [
+            "/opt/homebrew/bin/tesseract",
+            "/usr/local/bin/tesseract",
+            "/usr/bin/tesseract"
+        ]
+        windows_paths = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe")
+        ]
+        candidates = windows_paths if os.name == "nt" else unix_paths
+        for p in candidates:
             if os.path.exists(p):
                 found_bin = p
                 break
@@ -379,9 +385,21 @@ def extract_text_from_image(
     if not all_tokens:
         text_content = ""
         try:
-            text_content = image_bytes.decode("utf-8", errors="ignore")
+            text_content = image_bytes.decode("utf-8", errors="ignore").strip()
         except Exception:
             text_content = ""
+
+        if not text_content:
+            return {
+                "success": False,
+                "error": "No recognizable text detected on label.",
+                "full_text": "",
+                "lines": [],
+                "tokens": [],
+                "confidence": 0.0,
+                "engine": "none",
+                "is_synthetic": False
+            }
 
         lines = [line.strip() for line in text_content.splitlines() if line.strip()]
         tokens = []
@@ -390,11 +408,12 @@ def extract_text_from_image(
             for word in line.split():
                 tokens.append({
                     "text": word,
-                    "confidence": 0.90,
+                    "confidence": 0.50,
                     "bbox": [20.0, y_cursor, 120.0, y_cursor + 20.0],
                     "center": [70.0, y_cursor + 10.0],
                     "engine": "SyntheticFallback",
-                    "pass": "text_buffer"
+                    "pass": "text_buffer",
+                    "is_synthetic": True
                 })
             y_cursor += 30.0
 
@@ -405,6 +424,7 @@ def extract_text_from_image(
             "tokens": tokens,
             "confidence": 0.50,
             "engine": "SyntheticFallback",
+            "is_synthetic": True,
             "passes_evaluated": list(variants.keys())
         }
 

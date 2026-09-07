@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
   PieChart, Shield, CheckCircle2, AlertTriangle, HelpCircle,
-  Eye, ListCheck, Lock, Gavel, Check, X, Download, Code, Layers, Info, ShieldAlert, Type
+  Eye, ListCheck, Lock, Gavel, Check, X, Download, Code, Layers, Info, ShieldAlert, Type,
+  FileText, QrCode
 } from 'lucide-react';
 
 export default function ResultsPanel({ scanData, isLoading }) {
@@ -55,6 +56,10 @@ export default function ResultsPanel({ scanData, isLoading }) {
     a.download = `LegalMetrology_Report_${inspection_id}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const downloadPdf = () => {
+    window.open(`/api/inspections/${inspection_id}/pdf`, '_blank');
   };
 
   const getVerdictIcon = () => {
@@ -218,10 +223,41 @@ export default function ResultsPanel({ scanData, isLoading }) {
         <span>{disclaimer || "Automated preliminary assessment. System does not claim 100% accuracy or guaranteed legal compliance."}</span>
       </div>
 
+      {/* Barcode & Readability Intelligence Card */}
+      {(scanData?.barcode_data?.detected || scanData?.readability_analysis?.evaluated) && (
+        <div style={{ background: 'rgba(15, 23, 42, 0.5)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '8px', padding: '0.8rem', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', fontSize: '0.8rem' }}>
+            {scanData.barcode_data?.detected && (
+              <div>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#38bdf8' }}>
+                  <QrCode size={14} /> Optical Codes Detected:
+                </strong>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  {scanData.barcode_data.raw_codes.join(', ')}
+                </span>
+              </div>
+            )}
+            {scanData.readability_analysis?.evaluated && (
+              <div>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '4px', color: scanData.readability_analysis.rule_9_compliant ? '#4ade80' : '#facc15' }}>
+                  <Type size={14} /> Rule 9 Numeral Typography:
+                </strong>
+                <span style={{ color: 'var(--text-secondary)' }}>
+                  Avg {scanData.readability_analysis.avg_token_height_px}px | {scanData.readability_analysis.recommendation}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Action Bar */}
-      <div className="action-bar">
+      <div className="action-bar" style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-primary" onClick={downloadPdf}>
+          <FileText size={16} /> Download Official PDF Certificate
+        </button>
         <button type="button" className="btn btn-outline" onClick={downloadReport}>
-          <Download size={16} /> Download Audit Report
+          <Download size={16} /> Download JSON Report
         </button>
         <button type="button" className="btn btn-secondary" onClick={() => setShowJson(!showJson)}>
           <Code size={16} /> {showJson ? 'Hide Raw JSON' : 'View Raw Structured JSON'}

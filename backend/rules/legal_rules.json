@@ -132,6 +132,32 @@
       "validation_type": "presence_and_format",
       "error_message": "Package Dimensions / Size declaration is missing or unverified.",
       "applicable_categories": ["garments", "electronics", "packaged_goods"]
+    },
+    {
+      "rule_id": "LM_RULE_011_FSSAI",
+      "rule_name": "FSSAI Food Safety License Number Declaration",
+      "rule_clause": "FSSAI Packaging Regulations & LM Rule 6",
+      "target_field": "fssai_license",
+      "is_mandatory": false,
+      "version": "2011",
+      "effective_date": "2011-08-05",
+      "description": "Every packaged food commodity must display the 14-digit FSSAI license number and logo.",
+      "validation_type": "presence_and_format",
+      "error_message": "FSSAI 14-digit license number declaration is missing or invalid format.",
+      "applicable_categories": ["food"]
+    },
+    {
+      "rule_id": "LM_RULE_012_BATCH_NO",
+      "rule_name": "Batch or Lot / Code Number Declaration",
+      "rule_clause": "Rule 6(1)(e)",
+      "target_field": "batch_number",
+      "is_mandatory": false,
+      "version": "2011",
+      "effective_date": "2011-04-01",
+      "description": "Every package must bear the code or batch number identifying the lot or consignment.",
+      "validation_type": "presence",
+      "error_message": "Batch or Lot number declaration is missing.",
+      "applicable_categories": ["all", "food", "packaged_goods", "electronics", "garments"]
     }
   ]
 }
