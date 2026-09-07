@@ -986,6 +986,318 @@ class TestLegalMetrologySystem(unittest.TestCase):
         self.assertEqual(mrp_res["confidence"], 0.85)
         self.assertFalse(mrp_res["conflict"])
 
+    def test_66_strong_ocr_skips_gemini(self):
+        """Clean package with strong OCR on critical fields skips Gemini."""
+        from extraction.gemini_extractor import should_call_gemini
+        strong_ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.88, "unit": "g"},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.92, "date_str": "08/2026"},
+            "manufacturer": {"detected": True, "value": "ABC Foods Ltd, Mumbai", "status": "VERIFIED", "confidence": 0.85, "details": "ABC Foods Ltd, Mumbai"},
+            "generic_name": {"detected": True, "value": "Biscuits", "status": "VERIFIED", "confidence": 0.9, "name": "Biscuits"},
+            "batch_number": {"detected": True, "value": "B1234", "status": "VERIFIED", "confidence": 0.85, "batch_number": "B1234"},
+        }
+        needed, reason = should_call_gemini(strong_ocr, product_category="packaged_goods")
+        self.assertFalse(needed)
+        self.assertIn("sufficient", reason.lower())
+
+    def test_67_missing_mrp_triggers_gemini(self):
+        """Missing MRP triggers Gemini fallback."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertTrue(needed)
+        self.assertIn("mrp:missing", reason)
+
+    def test_68_missing_net_quantity_triggers_gemini(self):
+        """Missing Net Quantity triggers Gemini fallback."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertTrue(needed)
+        self.assertIn("net_quantity:missing", reason)
+
+    def test_69_missing_mfg_date_triggers_gemini(self):
+        """Missing Manufacturing Date triggers Gemini fallback."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertTrue(needed)
+        self.assertIn("manufacturing_date:missing", reason)
+
+    def test_70_missing_expiry_category_aware(self):
+        """Missing Expiry Date triggers Gemini on food, but is skipped on non-food."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Soap", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        # On non-food (packaged_goods), expiry is not critical -> skips Gemini
+        needed_non_food, reason_non_food = should_call_gemini(ocr, product_category="packaged_goods")
+        self.assertFalse(needed_non_food)
+        self.assertIn("sufficient", reason_non_food.lower())
+
+        # On food, expiry is mandatory/critical -> triggers Gemini
+        needed_food, reason_food = should_call_gemini(ocr, product_category="food")
+        self.assertTrue(needed_food)
+        self.assertIn("expiry_date:missing", reason_food)
+
+    def test_71_missing_batch_triggers_gemini(self):
+        """Missing Batch Number triggers Gemini fallback."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertTrue(needed)
+        self.assertIn("batch_number:missing", reason)
+
+    def test_72_missing_manufacturer_triggers_gemini(self):
+        """Missing Manufacturer triggers Gemini fallback."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertTrue(needed)
+        self.assertIn("manufacturer:missing", reason)
+
+    def test_73_missing_only_consumer_care_skips_gemini(self):
+        """Missing consumer care alone does NOT trigger Gemini when all critical declarations are strong."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC Ltd", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+            "consumer_care": {"detected": False, "value": None, "status": "INCONCLUSIVE"},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertFalse(needed)
+        self.assertIn("sufficient", reason.lower())
+
+    def test_74_missing_only_dimensions_skips_gemini(self):
+        """Missing dimensions alone does NOT trigger Gemini when all critical declarations are strong."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC Ltd", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Tea", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+            "dimensions": {"detected": False, "value": None, "status": "INCONCLUSIVE"},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertFalse(needed)
+        self.assertIn("sufficient", reason.lower())
+
+    def test_75_missing_fssai_on_non_food_skips_gemini(self):
+        """Missing FSSAI license alone does NOT trigger Gemini on non-food product."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC Ltd", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Stationery", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+            "fssai_license": {"detected": False, "value": None, "status": "INCONCLUSIVE"},
+        }
+        needed, reason = should_call_gemini(ocr, product_category="packaged_goods")
+        self.assertFalse(needed)
+        self.assertIn("sufficient", reason.lower())
+
+    def test_76_api_key_presence_does_not_trigger_gemini(self):
+        """Having GEMINI_API_KEY in environment never by itself causes Gemini to trigger on strong OCR."""
+        import os
+        from extraction.gemini_extractor import should_call_gemini
+        strong_ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC Ltd", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Biscuits", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        old_val = os.environ.get("GEMINI_API_KEY")
+        try:
+            os.environ["GEMINI_API_KEY"] = "AIzaSyFakeKeyForTestOnly12345678"
+            needed, reason = should_call_gemini(strong_ocr, product_category="packaged_goods")
+            self.assertFalse(needed)
+            self.assertIn("sufficient", reason.lower())
+        finally:
+            if old_val is not None:
+                os.environ["GEMINI_API_KEY"] = old_val
+            else:
+                os.environ.pop("GEMINI_API_KEY", None)
+
+    def test_77_low_confidence_critical_field_triggers_gemini(self):
+        """Critical field with confidence < 0.5 triggers Gemini."""
+        from extraction.gemini_extractor import should_call_gemini
+        ocr = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.35},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.9},
+            "manufacturing_date": {"detected": True, "value": "08/2026", "status": "VERIFIED", "confidence": 0.9},
+            "manufacturer": {"detected": True, "value": "ABC Ltd", "status": "VERIFIED", "confidence": 0.9},
+            "generic_name": {"detected": True, "value": "Biscuits", "status": "VERIFIED", "confidence": 0.9},
+            "batch_number": {"detected": True, "value": "B1", "status": "VERIFIED", "confidence": 0.9},
+        }
+        needed, reason = should_call_gemini(ocr)
+        self.assertTrue(needed)
+        self.assertIn("mrp:low_conf", reason)
+
+    def test_78_provenance_tag_rendering_in_rule_results(self):
+        """Rule engine accurately attaches ocr, gemini, ocr+gemini, and conflict provenance."""
+        extracted = {
+            "mrp": {"status": "VERIFIED", "detected": True, "value": 50.0, "source": "gemini", "confidence": 0.85},
+            "net_quantity": {"status": "VERIFIED", "detected": True, "value": 100.0, "unit": "g", "source": "ocr+gemini", "confidence": 0.95},
+            "generic_name": {"status": "VERIFIED", "detected": True, "name": "Soap", "source": "ocr", "confidence": 0.8},
+            "batch_number": {"status": "INCONCLUSIVE", "detected": True, "batch_number": "B1", "conflict": True, "source": "ocr"}
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        results_by_field = {r["target_field"]: r for r in report["rule_results"]}
+
+        self.assertEqual(results_by_field["mrp"]["source"], "gemini")
+        self.assertEqual(results_by_field["net_quantity"]["source"], "ocr+gemini")
+        self.assertEqual(results_by_field["generic_name"]["source"], "ocr")
+        self.assertTrue(results_by_field["batch_number"]["conflict"])
+
+
+    # ------------------------------------------------------------------
+    # Tests 79-81: Low-confidence OCR override and net_quantity fusion
+    # ------------------------------------------------------------------
+
+    def test_79_low_confidence_ocr_value_treated_as_case_b_not_case_c(self):
+        """
+        Regression: OCR produced a wrong numeric value (confidence < 0.5).
+        fuse_gemini_evidence must treat this as Case B (Gemini fills) NOT Case C (conflict).
+        Real scenario: OCR reads '8.0' for MRP (noise), Gemini reads '45.0' (correct).
+        """
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {
+                "detected": True,
+                "value": 8.0,
+                "status": "VERIFIED",
+                "confidence": 0.3,  # Low confidence — unreliable OCR read
+                "raw_text": "8",
+                "source": "ocr",
+            }
+        }
+        gemini_fields = {
+            "mrp": {"value": 45.0, "visible_text": "MRP Rs. 45.00", "confidence": 0.85, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+
+        # Must be Case B: Gemini fills, status=VERIFIED, value=45.0
+        self.assertEqual(fused["mrp"]["fusion_case"], "B", "Low-confidence OCR should yield Case B, not Case C")
+        self.assertEqual(fused["mrp"]["status"], "VERIFIED")
+        self.assertAlmostEqual(float(fused["mrp"]["value"]), 45.0)
+        self.assertEqual(fused["mrp"]["source"], "gemini")
+        self.assertFalse(fused["mrp"].get("conflict", False), "Case B must NOT set conflict=True")
+
+    def test_80_net_quantity_filled_by_gemini_passes_rule_engine(self):
+        """
+        Regression: Net quantity absent from OCR, filled by Gemini → rule engine gives PASS.
+        Ensures Case B fusion produces the correct keys (value, unit, is_standard_metric)
+        that the rule engine's net_quantity evaluation requires.
+        """
+        from extraction.gemini_extractor import fuse_gemini_evidence, normalize_declaration_evidence
+        from rules.engine import evaluate_compliance
+
+        ocr_decls = {
+            "net_quantity": {
+                "detected": False,
+                "status": "FAIL",
+                "value": None,
+                "unit": None,
+                "raw_text": None,
+                "source": "ocr",
+            }
+        }
+        gemini_fields = {
+            "net_quantity": {"value": "30g", "visible_text": "Net Wt. 30g", "confidence": 0.85, "source": "gemini"},
+        }
+
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+        normalized = normalize_declaration_evidence(fused)
+
+        nq = normalized["net_quantity"]
+        self.assertEqual(nq["status"], "VERIFIED")
+        self.assertTrue(nq["detected"])
+        self.assertIsNotNone(nq["value"])
+        self.assertIsNotNone(nq.get("unit"))
+        self.assertTrue(nq.get("is_standard_metric", True))
+
+        # Rule engine should PASS this
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(normalized, quality)
+        results_by_field = {r["target_field"]: r for r in report["rule_results"]}
+        if "net_quantity" in results_by_field:
+            self.assertEqual(results_by_field["net_quantity"]["status"], "PASS",
+                             "Gemini-filled net_quantity with valid unit must PASS rule engine")
+
+    def test_81_high_confidence_ocr_conflict_still_case_c(self):
+        """
+        Regression: High-confidence OCR value (>= 0.5) that disagrees with Gemini must stay Case C.
+        Ensures the confidence downgrade only applies to genuinely low-confidence (<0.5) OCR reads.
+        """
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {
+                "detected": True,
+                "value": 50.0,
+                "status": "VERIFIED",
+                "confidence": 0.85,  # High confidence — OCR is reliable
+                "source": "ocr",
+            }
+        }
+        gemini_fields = {
+            "mrp": {"value": 80.0, "visible_text": "MRP Rs. 80", "confidence": 0.85, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+
+        # Must remain Case C: conflict between reliable OCR and Gemini
+        self.assertEqual(fused["mrp"]["fusion_case"], "C", "High-confidence OCR conflict must remain Case C")
+        self.assertEqual(fused["mrp"]["status"], "INCONCLUSIVE")
+        self.assertTrue(fused["mrp"]["conflict"])
+
 
 if __name__ == "__main__":
     unittest.main()

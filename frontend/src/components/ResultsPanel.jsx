@@ -181,20 +181,25 @@ export default function ResultsPanel({ scanData, isLoading }) {
         </div>
       </div>
 
-      {/* Gemini Vision Fallback Status Banner */}
-      {scanData?.extraction_metadata?.gemini_used && (
+      {/* AI-Assisted Visual Analysis Banner - ONLY when actually used and successful */}
+      {scanData?.extraction_metadata?.gemini_used === true && scanData?.extraction_metadata?.gemini_status === 'success' && (
         <div style={{ background: 'rgba(124, 58, 237, 0.12)', border: '1px solid rgba(124, 58, 237, 0.3)', borderRadius: '8px', padding: '0.75rem 1rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ padding: '2px 8px', borderRadius: '4px', background: '#7c3aed', color: '#fff', fontSize: '0.75rem', fontWeight: 'bold' }}>
-              Gemini Vision
+              AI-Assisted Visual Analysis
             </span>
             <span style={{ fontSize: '0.82rem', color: '#e2e8f0' }}>
-              Secondary Visual Extraction Active ({scanData.extraction_metadata.gemini_fields_extracted || 0} fields augmented)
+              {scanData.extraction_metadata.gemini_fields_extracted || 0} declarations enhanced via secondary visual pass
             </span>
           </div>
           <span style={{ fontSize: '0.75rem', color: '#cbd5e1', fontStyle: 'italic' }}>
             {scanData.extraction_metadata.gemini_reason}
           </span>
+        </div>
+      )}
+      {scanData?.extraction_metadata?.gemini_used === true && (scanData?.extraction_metadata?.gemini_status === 'error' || scanData?.extraction_metadata?.gemini_status === 'no_fields_returned') && (
+        <div style={{ background: 'rgba(100, 116, 139, 0.1)', border: '1px solid rgba(100, 116, 139, 0.25)', borderRadius: '6px', padding: '0.5rem 0.8rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.78rem', color: '#94a3b8' }}>
+          <span>Secondary visual analysis unavailable or returned no additional fields; results based on primary OCR.</span>
         </div>
       )}
 
@@ -240,16 +245,21 @@ export default function ResultsPanel({ scanData, isLoading }) {
                         </div>
                         {rule.source === 'gemini' && (
                           <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed', border: '1px solid rgba(124, 58, 237, 0.3)', fontWeight: '600' }}>
-                            Gemini Vision
+                            AI Assisted
                           </span>
                         )}
                         {rule.source === 'ocr+gemini' && (
                           <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.3)', fontWeight: '600' }}>
-                            OCR + Gemini
+                            Corroborated
+                          </span>
+                        )}
+                        {rule.source === 'ocr' && (
+                          <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(100, 116, 139, 0.15)', color: '#475569', border: '1px solid rgba(100, 116, 139, 0.3)', fontWeight: '600' }}>
+                            OCR
                           </span>
                         )}
                         {rule.conflict && (
-                          <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.15)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.3)', fontWeight: '600' }}>
+                          <span style={{ display: 'inline-block', marginTop: '3px', marginLeft: '4px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.15)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.3)', fontWeight: '600' }}>
                             Conflict
                           </span>
                         )}

@@ -371,14 +371,16 @@ async def scan_product(
     extraction_metadata = {
         "ocr_used": True,
         "gemini_used": False,
-        "gemini_reason": "Not evaluated",
-        "gemini_status": "skipped",
+        "gemini_reason": "Direct text evaluation mode; secondary vision skipped",
+        "gemini_status": "skipped_text_direct",
     }
 
     # Gemini fallback only available when a real image was submitted
     if image_bytes:
         try:
-            gemini_needed, gemini_reason = should_call_gemini(extracted_declarations)
+            gemini_needed, gemini_reason = should_call_gemini(
+                extracted_declarations, product_category=product_category
+            )
             if gemini_needed:
                 logger.info(
                     f"[GEMINI_FALLBACK] ID={inspection_id} | Invoking Gemini. "
@@ -405,6 +407,7 @@ async def scan_product(
                         "gemini_used": True,
                         "gemini_reason": gemini_reason,
                         "gemini_status": "no_fields_returned",
+                        "gemini_fields_extracted": 0,
                     })
                     logger.info(
                         f"[GEMINI_FALLBACK] ID={inspection_id} | Gemini returned "
@@ -412,6 +415,7 @@ async def scan_product(
                     )
             else:
                 extraction_metadata.update({
+                    "gemini_used": False,
                     "gemini_reason": gemini_reason,
                     "gemini_status": "skipped_ocr_sufficient",
                 })
@@ -422,8 +426,10 @@ async def scan_product(
                 f"{_gemini_pipeline_exc}"
             )
             extraction_metadata.update({
+                "gemini_used": True,
                 "gemini_status": "error",
                 "gemini_reason": "Internal error — see server logs",
+                "gemini_fields_extracted": 0,
             })
 
     # 4c. Strict Evidence Contract Normalization (Ensures VERIFIED => non-null value)

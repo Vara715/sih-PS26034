@@ -288,33 +288,100 @@ def _values_agree(val_a: Any, val_b: Any) -> bool:
 # Trigger Logic
 # ---------------------------------------------------------------------------
 
-def should_call_gemini(ocr_declarations: dict) -> tuple[bool, str]:
+_CORE_CRITICAL_FIELDS = [
+    "mrp",
+    "net_quantity",
+    "manufacturing_date",
+    "manufacturer",
+    "generic_name",
+    "batch_number",
+]
+
+
+def get_critical_fields(product_category: str = "packaged_goods") -> list[str]:
+    """
+    Returns the list of critical declaration fields that determine if Gemini fallback
+    is necessary. Category-aware:
+      - 'food': includes 'expiry_date' under Rule 6(1)(e) Second Proviso.
+      - 'imported': includes 'country_of_origin' under Rule 6(1)(n).
+      - Conditional / secondary declarations (consumer care, dimensions, FSSAI,
+        domestic country of origin, unit sale price) do not trigger Gemini on their own.
+    """
+    fields = list(_CORE_CRITICAL_FIELDS)
+    if product_category == "food":
+        fields.append("expiry_date")
+    elif product_category == "imported":
+        fields.append("country_of_origin")
+    return fields
+
+
+def _extract_field_value(fd: dict, field: str) -> Any:
+    """Extracts primary value or known statutory alias from declaration dict."""
+    if not isinstance(fd, dict):
+        return None
+    val = fd.get("value")
+    if val is not None:
+        return val
+    if field in ("manufacturing_date", "expiry_date"):
+        return fd.get("date_str")
+    elif field == "manufacturer":
+        return fd.get("details")
+    elif field == "generic_name":
+        return fd.get("name")
+    elif field == "batch_number":
+        return fd.get("batch_number")
+    elif field == "fssai_license":
+        return fd.get("license_number")
+    elif field == "country_of_origin":
+        return fd.get("country")
+    return fd.get("raw_text") or fd.get("visible_text")
+
+
+def should_call_gemini(
+    ocr_declarations: dict,
+    product_category: str = "packaged_goods"
+) -> tuple[bool, str]:
     """
     Determines whether Gemini should be called as a secondary fallback.
-    Triggers when any mandatory Legal Metrology field is:
+    Only triggers when one or more CRITICAL Legal Metrology fields are:
       - Completely absent from OCR output
       - Marked detected=False
+      - Has a null or empty-like value
       - Marked status='INCONCLUSIVE'
       - Has confidence < 0.5
+      - Marked is_valid=False (invalid date format / invalid MRP)
+
+    Secondary / conditional declarations (consumer care, dimensions, FSSAI,
+    domestic country of origin, unit sale price) do NOT trigger Gemini on their own.
     """
     if not ocr_declarations:
         return True, "No OCR declarations produced"
 
+    critical_fields = get_critical_fields(product_category)
     weak_fields = []
-    for field in _MANDATORY_FIELDS:
+
+    for field in critical_fields:
         fd = ocr_declarations.get(field)
         if not fd:
             weak_fields.append(f"{field}:missing")
             continue
+
+        val = _extract_field_value(fd, field)
+        val_clean = _clean_val(val)
+
         if not fd.get("detected", False):
-            weak_fields.append(f"{field}:missing")
+            weak_fields.append(f"{field}:not_detected")
+        elif val_clean is None:
+            weak_fields.append(f"{field}:null_val")
         elif fd.get("status") == "INCONCLUSIVE":
             weak_fields.append(f"{field}:inconclusive")
         elif isinstance(fd.get("confidence"), (int, float)) and fd["confidence"] < 0.5:
             weak_fields.append(f"{field}:low_conf")
+        elif fd.get("is_valid") is False:
+            weak_fields.append(f"{field}:invalid")
 
     if weak_fields:
-        return True, f"Weak OCR evidence on fields: {', '.join(weak_fields[:5])}"
+        return True, f"Weak OCR evidence on critical fields: {', '.join(weak_fields[:5])}"
 
     return False, "OCR evidence sufficient; Gemini not required"
 
@@ -377,6 +444,7 @@ def extract_with_gemini(
             val = _clean_val(data.get("value"))
             vis = _clean_val(data.get("visible_text"))
             if val is None:
+                logger.debug(f"[GEMINI] Field '{field}' returned null value — skipping.")
                 continue
 
             result[field] = {
@@ -386,6 +454,7 @@ def extract_with_gemini(
                 "confidence": 0.85,
                 "source": "gemini",
             }
+            logger.debug(f"[GEMINI] Parsed field '{field}': val={val!r}")
 
         logger.info(
             f"[GEMINI] Extracted {len(result)}/{len(_MANDATORY_FIELDS)} fields "
@@ -463,7 +532,12 @@ def fuse_gemini_evidence(ocr_declarations: dict, gemini_fields: dict) -> dict:
         ocr_status = ocr_fd.get("status", "INCONCLUSIVE")
 
         # Check if OCR has strong, usable, verified evidence
-        ocr_has_usable_evidence = ocr_detected and ocr_val is not None and ocr_status == "VERIFIED"
+        ocr_confidence = ocr_fd.get("confidence", 1.0)
+        if isinstance(ocr_confidence, (int, float)) and ocr_confidence < 0.5:
+            # Low-confidence OCR detection is treated as unreliable — Case B (Gemini fills)
+            ocr_has_usable_evidence = False
+        else:
+            ocr_has_usable_evidence = ocr_detected and ocr_val is not None and ocr_status == "VERIFIED"
 
         if not ocr_has_usable_evidence:
             # Case B: OCR missing, inconclusive, or null value -> Gemini fills evidence
