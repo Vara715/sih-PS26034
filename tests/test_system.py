@@ -655,6 +655,15 @@ class TestLegalMetrologySystem(unittest.TestCase):
             self.assertEqual(len(res["tokens"]), 0)
             self.assertFalse(res.get("is_synthetic", False))
 
+    def test_41_anchored_numeric_mfd_date(self):
+        """Tests that anchored slash-delimited numeric date 'PKD: 12/08/2024' extracts correctly."""
+        sample = "ABC Biscuits\nPKD: 12/08/2024\nMRP Rs. 50"
+        ext = extract_declarations(sample)
+        mfd = ext["manufacturing_date"]
+        self.assertTrue(mfd["detected"])
+        self.assertEqual(mfd["status"], "VERIFIED")
+        self.assertEqual(mfd["date_str"], "12/08/2024")
+
 
 if __name__ == "__main__":
     unittest.main()

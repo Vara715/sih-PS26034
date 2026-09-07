@@ -391,6 +391,44 @@ def extract_mfd_date_evidence(text: str, normalized: str, tokens: List[Dict[str,
                 "evidence_reason": f"Mfg/Packing date '{date_str}' verified with compact date anchor."
             }
 
+    # Pattern 1C: Delimited Numeric Date DD/MM/YYYY or DD-MM-YYYY (e.g. PKD: 12/08/2024, MFD 12-08-2024)
+    ddmmyyyy_pattern = r"(?:Mfg|Mfd|Manufactured|Packed|PKDS?|PKT|DOM|Date\s+of\s+(?:Mfg|Packing|Manufacture))\.?\s*(?:Date|on)?\s*[:\-\s,]*([0-3]?\d)[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](20\d{2}|\d{2})\b"
+    match_ddmmyyyy = re.search(ddmmyyyy_pattern, normalized, re.IGNORECASE)
+    if match_ddmmyyyy:
+        day = match_ddmmyyyy.group(1)
+        month = match_ddmmyyyy.group(2)
+        year = match_ddmmyyyy.group(3)
+        if len(year) == 2:
+            year = "20" + year
+        if len(day) == 1:
+            day = "0" + day
+        if len(month) == 1:
+            month = "0" + month
+        date_str = f"{day}/{month}/{year}"
+        is_valid, reason = validate_mfd_date(month, year)
+        if is_valid:
+            return {
+                "detected": True,
+                "status": "VERIFIED",
+                "date_str": date_str,
+                "month": month,
+                "year": year,
+                "is_valid": True,
+                "raw_text": match_ddmmyyyy.group(0),
+                "evidence_reason": f"Mfg/Packing date '{date_str}' verified with explicit date anchor."
+            }
+        else:
+            return {
+                "detected": True,
+                "status": "FAIL",
+                "date_str": date_str,
+                "month": month,
+                "year": year,
+                "is_valid": False,
+                "raw_text": match_ddmmyyyy.group(0),
+                "invalid_reason": reason
+            }
+
     # Pattern 2: Numeric Date MM/YYYY or MM-YYYY without day (e.g. 08/2026 or 08-2026 or 08/26)
     mmyyyy_pattern = r"(?:Mfg|Mfd|Manufactured|Packed|PKDS?|PKT|DOM|Date\s+of\s+(?:Mfg|Packing|Manufacture))\.?\s*(?:Date|on)?\s*[:\-\s,]*([A-Za-z]{3}|\d{1,2})[\/\-\.\s]*(20\d{2}|\d{2})\b"
     match_mmyyyy = re.search(mmyyyy_pattern, normalized, re.IGNORECASE)
