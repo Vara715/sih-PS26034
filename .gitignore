@@ -1,0 +1,20 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+
+# Runtime database
+*.db
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# OS/editor
+.DS_Store
+.vscode/
