@@ -1,20 +1,48 @@
-# Environment / secrets
+# ── Secrets ────────────────────────────────────────────────────────────────
 .env
+*.env.*
 
-# Python
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# Virtual environment
+# ── Virtual environment ─────────────────────────────────────────────────────
 .venv/
+venv/
+env/
 
-# Runtime database
+# ── Test / coverage artifacts ───────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.xml
+
+# ── Runtime databases ────────────────────────────────────────────────────────
 *.db
+*.sqlite3
 
-# Frontend
-node_modules/
+# ── Frontend ─────────────────────────────────────────────────────────────────
+frontend/node_modules/
 frontend/dist/
 
-# OS/editor
+# ── OS / editor ──────────────────────────────────────────────────────────────
 .DS_Store
 .vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# ── Temporary / one-off files ─────────────────────────────────────────────────
+test_gemini.py
+WhatsApp*.jpeg
+WhatsApp*.jpg
+WhatsApp*.png
+*.tmp

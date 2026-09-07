@@ -664,11 +664,329 @@ class TestLegalMetrologySystem(unittest.TestCase):
         self.assertEqual(mfd["status"], "VERIFIED")
         self.assertEqual(mfd["date_str"], "12/08/2024")
 
+    # ===========================================================================
+    # Gemini Extractor Tests (tests 42–50) — all mocked, NO real API quota used
+    # ===========================================================================
+
+    def test_42_gemini_response_parsing_valid_json(self):
+        """_parse_gemini_response correctly parses a well-formed JSON string."""
+        from extraction.gemini_extractor import _parse_gemini_response
+        raw = '{"mrp": {"value": 45.0, "visible_text": "MRP Rs. 45"}}'
+        parsed = _parse_gemini_response(raw)
+        self.assertEqual(parsed["mrp"]["value"], 45.0)
+        self.assertEqual(parsed["mrp"]["visible_text"], "MRP Rs. 45")
+
+    def test_43_gemini_response_parsing_markdown_fences(self):
+        """_parse_gemini_response strips markdown code fences before parsing JSON."""
+        from extraction.gemini_extractor import _parse_gemini_response
+        raw = '```json\n{"mrp": {"value": 20.0, "visible_text": "Rs 20"}}\n```'
+        parsed = _parse_gemini_response(raw)
+        self.assertIn("mrp", parsed)
+        self.assertEqual(parsed["mrp"]["value"], 20.0)
+
+    def test_44_gemini_response_parsing_malformed_json(self):
+        """_parse_gemini_response returns {} on malformed JSON without raising."""
+        from extraction.gemini_extractor import _parse_gemini_response
+        parsed = _parse_gemini_response("{this is not valid json{{")
+        self.assertEqual(parsed, {})
+
+    def test_45_gemini_response_parsing_empty_string(self):
+        """_parse_gemini_response returns {} on empty string input."""
+        from extraction.gemini_extractor import _parse_gemini_response
+        parsed = _parse_gemini_response("")
+        self.assertEqual(parsed, {})
+
+    def test_46_gemini_api_failure_returns_empty_dict(self):
+        """extract_with_gemini returns {} on API failure and does NOT raise."""
+        from unittest.mock import patch, MagicMock
+        from extraction.gemini_extractor import extract_with_gemini
+
+        with patch("extraction.gemini_extractor._get_gemini_client") as mock_client_fn:
+            mock_client = MagicMock()
+            mock_client.models.generate_content.side_effect = RuntimeError("Simulated quota exceeded")
+            mock_client_fn.return_value = mock_client
+
+            result = extract_with_gemini(b"\xff\xd8\xff" + b"\x00" * 100)
+            self.assertEqual(result, {})
+
+    def test_47_gemini_missing_api_key_returns_empty_dict(self):
+        """extract_with_gemini returns {} when GEMINI_API_KEY env var is absent."""
+        from unittest.mock import patch
+        from extraction.gemini_extractor import extract_with_gemini
+        import os
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}, clear=False):
+            result = extract_with_gemini(b"\xff\xd8\xff" + b"\x00" * 100)
+            self.assertEqual(result, {})
+
+    def test_48_gemini_fills_missing_ocr_field(self):
+        """fuse_gemini_evidence Case B: Gemini fills a field missing from OCR result."""
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {"detected": False, "value": None, "status": "INCONCLUSIVE"},
+            "net_quantity": {"detected": True, "value": 200.0, "status": "VERIFIED", "confidence": 0.9},
+        }
+        gemini_fields = {
+            "mrp": {"value": 35.0, "visible_text": "MRP Rs. 35", "confidence": 0.85, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+        self.assertTrue(fused["mrp"]["detected"])
+        self.assertEqual(fused["mrp"]["value"], 35.0)
+        self.assertEqual(fused["mrp"]["source"], "gemini")
+        self.assertEqual(fused["mrp"]["fusion_case"], "B")
+
+    def test_49_gemini_agreement_corroborates_ocr(self):
+        """fuse_gemini_evidence Case A: Gemini agreement boosts confidence."""
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.75},
+        }
+        gemini_fields = {
+            "mrp": {"value": 50.0, "visible_text": "MRP Rs. 50", "confidence": 0.9, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+        self.assertEqual(fused["mrp"]["source"], "ocr+gemini")
+        self.assertEqual(fused["mrp"]["fusion_case"], "A")
+        self.assertGreater(fused["mrp"]["confidence"], 0.75)
+
+    def test_50_gemini_conflict_marks_inconclusive(self):
+        """fuse_gemini_evidence Case C: OCR vs Gemini conflict → INCONCLUSIVE."""
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {"detected": True, "value": 50.0, "status": "VERIFIED", "confidence": 0.85},
+        }
+        gemini_fields = {
+            "mrp": {"value": 80.0, "visible_text": "MRP Rs. 80", "confidence": 0.9, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+        self.assertEqual(fused["mrp"]["status"], "INCONCLUSIVE")
+        self.assertTrue(fused["mrp"]["conflict"])
+        self.assertEqual(fused["mrp"]["fusion_case"], "C")
+
+    def test_51_should_call_gemini_returns_false_when_ocr_sufficient(self):
+        """should_call_gemini returns False when all detected fields have VERIFIED status."""
+        from extraction.gemini_extractor import should_call_gemini, _MANDATORY_FIELDS
+
+        # All mandatory fields detected and verified — Gemini should not be invoked
+        strong_ocr = {
+            field: {"detected": True, "value": "val", "status": "VERIFIED", "confidence": 0.9}
+            for field in _MANDATORY_FIELDS
+        }
+        needed, reason = should_call_gemini(strong_ocr)
+        self.assertFalse(needed)
+        self.assertIn("sufficient", reason.lower())
+
+    def test_52_should_call_gemini_returns_true_when_field_missing(self):
+        """should_call_gemini returns True when a mandatory field is missing."""
+        from extraction.gemini_extractor import should_call_gemini
+
+        weak_ocr = {
+            "mrp": {"detected": False, "value": None, "status": "INCONCLUSIVE"},
+        }
+        needed, reason = should_call_gemini(weak_ocr)
+        self.assertTrue(needed)
+        self.assertIn("mrp", reason)
+
+    def test_53_ocr_value_none_detected_true_triggers_case_b(self):
+        """fuse_gemini_evidence Case B: OCR detected=True but value=None triggers Case B, NOT Case C."""
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {"detected": True, "value": None, "status": "INCONCLUSIVE", "raw_text": "MRP"},
+        }
+        gemini_fields = {
+            "mrp": {"value": 45.0, "visible_text": "MRP Rs. 45", "confidence": 0.85, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+        self.assertEqual(fused["mrp"]["fusion_case"], "B")
+        self.assertEqual(fused["mrp"]["status"], "VERIFIED")
+        self.assertEqual(fused["mrp"]["value"], 45.0)
+        self.assertEqual(fused["mrp"]["source"], "gemini")
+
+    def test_54_gemini_empty_leaves_ocr_unchanged(self):
+        """fuse_gemini_evidence Case D: Empty Gemini result leaves OCR completely unchanged."""
+        from extraction.gemini_extractor import fuse_gemini_evidence
+
+        ocr_decls = {
+            "mrp": {"detected": True, "value": 20.0, "status": "VERIFIED", "confidence": 0.9},
+            "net_quantity": {"detected": True, "value": 100.0, "status": "VERIFIED", "confidence": 0.85},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, {})
+        self.assertEqual(fused["mrp"]["value"], 20.0)
+        self.assertEqual(fused["net_quantity"]["value"], 100.0)
+        self.assertEqual(fused["mrp"]["status"], "VERIFIED")
+
+    def test_55_normalization_removes_verified_with_null_value(self):
+        """normalize_declaration_evidence enforces invariant: VERIFIED requires usable non-null value."""
+        from extraction.gemini_extractor import normalize_declaration_evidence
+
+        bad_declarations = {
+            "mrp": {"status": "VERIFIED", "detected": True, "value": None, "raw_text": None},
+            "manufacturer": {"status": "VERIFIED", "detected": True, "value": None, "details": None},
+        }
+        normalized = normalize_declaration_evidence(bad_declarations)
+        self.assertEqual(normalized["mrp"]["status"], "INCONCLUSIVE")
+        self.assertFalse(normalized["mrp"]["detected"])
+        self.assertIsNone(normalized["mrp"]["value"])
+
+        self.assertEqual(normalized["manufacturer"]["status"], "INCONCLUSIVE")
+        self.assertFalse(normalized["manufacturer"]["detected"])
+
+    def test_56_rule_engine_does_not_pass_mrp_with_none_value(self):
+        """Rule engine never PASSes MRP if value is None."""
+        extracted = {
+            "mrp": {"status": "VERIFIED", "detected": True, "value": None, "raw_text": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        mrp_rule = next(r for r in report["rule_results"] if r["target_field"] == "mrp")
+        self.assertNotEqual(mrp_rule["status"], "PASS")
+
+    def test_57_rule_engine_does_not_pass_manufacturer_with_none_value(self):
+        """Rule engine never PASSes manufacturer if details and value are None."""
+        extracted = {
+            "manufacturer": {"status": "VERIFIED", "detected": True, "value": None, "details": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        mfr_rule = next(r for r in report["rule_results"] if r["target_field"] == "manufacturer")
+        self.assertNotEqual(mfr_rule["status"], "PASS")
+
+    def test_58_rule_engine_does_not_pass_net_quantity_with_none_value(self):
+        """Rule engine never PASSes net quantity if value is None."""
+        extracted = {
+            "net_quantity": {"status": "VERIFIED", "detected": True, "value": None, "unit": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        qty_rule = next(r for r in report["rule_results"] if r["target_field"] == "net_quantity")
+        self.assertNotEqual(qty_rule["status"], "PASS")
+
+    def test_59_rule_engine_does_not_pass_expiry_with_none_value(self):
+        """Rule engine never PASSes expiry if date_str and value are None."""
+        extracted = {
+            "expiry_date": {"status": "VERIFIED", "detected": True, "value": None, "date_str": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        exp_rule = next(r for r in report["rule_results"] if r["target_field"] == "expiry_date")
+        self.assertNotEqual(exp_rule["status"], "PASS")
+
+    def test_60_rule_engine_does_not_pass_batch_with_none_value(self):
+        """Rule engine never PASSes batch number if batch_number and value are None."""
+        extracted = {
+            "batch_number": {"status": "VERIFIED", "detected": True, "value": None, "batch_number": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        batch_rule = next(r for r in report["rule_results"] if r["target_field"] == "batch_number")
+        self.assertNotEqual(batch_rule["status"], "PASS")
+
+    def test_61_rule_engine_does_not_pass_unit_sale_price_with_none_value(self):
+        """Rule engine never PASSes unit sale price if value and raw_text are None."""
+        extracted = {
+            "unit_sale_price": {"status": "VERIFIED", "detected": True, "value": None, "raw_text": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        usp_rule = next(r for r in report["rule_results"] if r["target_field"] == "unit_sale_price")
+        self.assertEqual(usp_rule["status"], "INCONCLUSIVE")
+
+    def test_62_country_of_origin_requires_verified_domestic_manufacturer(self):
+        """Country of origin returns INCONCLUSIVE (not PASS with None) when domestic manufacturer is unverified."""
+        extracted = {
+            "country_of_origin": {"status": "INCONCLUSIVE", "detected": False, "value": None, "country": None},
+            "manufacturer": {"status": "INCONCLUSIVE", "detected": False, "value": None, "details": None},
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality, product_category="packaged_goods")
+        origin_rule = next(r for r in report["rule_results"] if r["target_field"] == "country_of_origin")
+        self.assertEqual(origin_rule["status"], "INCONCLUSIVE")
+
+    def test_63_gemini_fused_fields_pass_with_usable_evidence(self):
+        """Gemini-fused declarations with real evidence pass rule engine with non-null evidence text."""
+        from extraction.gemini_extractor import fuse_gemini_evidence, normalize_declaration_evidence
+
+        ocr_decls = {}
+        gemini_fields = {
+            "mrp": {"value": 5.0, "visible_text": "MRP Rs. 5.00", "confidence": 0.85, "source": "gemini"},
+            "manufacturer": {"value": "Bloombay Foods Pvt Ltd", "visible_text": "Bloombay Foods Pvt Ltd", "confidence": 0.85, "source": "gemini"},
+            "batch_number": {"value": "1/U1N29D", "visible_text": "1/U1N29D", "confidence": 0.85, "source": "gemini"},
+        }
+        fused = fuse_gemini_evidence(ocr_decls, gemini_fields)
+        normalized = normalize_declaration_evidence(fused)
+
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(normalized, quality)
+
+        mrp_rule = next(r for r in report["rule_results"] if r["target_field"] == "mrp")
+        self.assertEqual(mrp_rule["status"], "PASS")
+        self.assertIsNotNone(mrp_rule["evidence_text"])
+        self.assertIn("5", str(mrp_rule["evidence_text"]))
+        self.assertEqual(mrp_rule["source"], "gemini")
+
+        mfr_rule = next(r for r in report["rule_results"] if r["target_field"] == "manufacturer")
+        self.assertEqual(mfr_rule["status"], "PASS")
+        self.assertIn("Bloombay", str(mfr_rule["evidence_text"]))
+
+        batch_rule = next(r for r in report["rule_results"] if r["target_field"] == "batch_number")
+        self.assertEqual(batch_rule["status"], "PASS")
+        self.assertEqual(batch_rule["evidence_text"], "1/U1N29D")
+
+    def test_64_pdf_generation_never_outputs_literal_none(self):
+        """generate_inspection_pdf never outputs literal 'None' for evidence or explanation."""
+        from reporting.pdf_report import generate_inspection_pdf
+        scan_data = {
+            "inspection_id": "INS-TEST-NONE",
+            "product_category": "packaged_goods",
+            "compliance_report": {
+                "overall_status": "INCONCLUSIVE",
+                "verdict_title": "Test Assessment",
+                "rule_results": [
+                    {
+                        "rule_clause": "Rule 6(1)(a)",
+                        "target_field": "mrp",
+                        "status": "INCONCLUSIVE",
+                        "evidence_text": None,
+                        "explanation": None,
+                        "source": "ocr"
+                    }
+                ]
+            },
+            "quality_assessment": {"blur_score": 100.0, "quality_rating": "GOOD", "resolution": "1920x1080"},
+            "evidence_ledger": {"evidence_hash": "dummyhash"}
+        }
+        pdf = generate_inspection_pdf(scan_data)
+        self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        # Must not contain literal " None" as evidence
+        self.assertNotIn(b" INCONCLUSIVE None", pdf)
+
+    def test_65_provenance_preserved_in_rule_results(self):
+        """Rule engine preserves source, confidence, fusion_case, and conflict in rule results."""
+        extracted = {
+            "mrp": {
+                "status": "VERIFIED",
+                "detected": True,
+                "value": 50.0,
+                "raw_text": "MRP Rs. 50",
+                "source": "gemini",
+                "confidence": 0.85,
+                "fusion_case": "B",
+                "conflict": False
+            }
+        }
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "GOOD"}
+        report = evaluate_compliance(extracted, quality)
+        mrp_res = next(r for r in report["rule_results"] if r["target_field"] == "mrp")
+        self.assertEqual(mrp_res["source"], "gemini")
+        self.assertEqual(mrp_res["fusion_case"], "B")
+        self.assertEqual(mrp_res["confidence"], 0.85)
+        self.assertFalse(mrp_res["conflict"])
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-
-
 

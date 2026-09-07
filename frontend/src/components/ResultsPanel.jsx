@@ -181,6 +181,23 @@ export default function ResultsPanel({ scanData, isLoading }) {
         </div>
       </div>
 
+      {/* Gemini Vision Fallback Status Banner */}
+      {scanData?.extraction_metadata?.gemini_used && (
+        <div style={{ background: 'rgba(124, 58, 237, 0.12)', border: '1px solid rgba(124, 58, 237, 0.3)', borderRadius: '8px', padding: '0.75rem 1rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ padding: '2px 8px', borderRadius: '4px', background: '#7c3aed', color: '#fff', fontSize: '0.75rem', fontWeight: 'bold' }}>
+              Gemini Vision
+            </span>
+            <span style={{ fontSize: '0.82rem', color: '#e2e8f0' }}>
+              Secondary Visual Extraction Active ({scanData.extraction_metadata.gemini_fields_extracted || 0} fields augmented)
+            </span>
+          </div>
+          <span style={{ fontSize: '0.75rem', color: '#cbd5e1', fontStyle: 'italic' }}>
+            {scanData.extraction_metadata.gemini_reason}
+          </span>
+        </div>
+      )}
+
       {/* Audit Checklist Table */}
       {rules_applied_count > 0 && (
         <div className="rules-audit-section">
@@ -218,7 +235,24 @@ export default function ResultsPanel({ scanData, isLoading }) {
                         </span>
                       </td>
                       <td style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: '#0f172a', fontWeight: '600' }}>
-                        {rule.evidence_text || <em style={{ color: '#94a3b8', fontStyle: 'italic', fontWeight: '400' }}>Not detected</em>}
+                        <div>
+                          {rule.evidence_text || <em style={{ color: '#94a3b8', fontStyle: 'italic', fontWeight: '400' }}>Not detected</em>}
+                        </div>
+                        {rule.source === 'gemini' && (
+                          <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed', border: '1px solid rgba(124, 58, 237, 0.3)', fontWeight: '600' }}>
+                            Gemini Vision
+                          </span>
+                        )}
+                        {rule.source === 'ocr+gemini' && (
+                          <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#059669', border: '1px solid rgba(16, 185, 129, 0.3)', fontWeight: '600' }}>
+                            OCR + Gemini
+                          </span>
+                        )}
+                        {rule.conflict && (
+                          <span style={{ display: 'inline-block', marginTop: '3px', padding: '1px 6px', fontSize: '0.68rem', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.15)', color: '#dc2626', border: '1px solid rgba(239, 68, 68, 0.3)', fontWeight: '600' }}>
+                            Conflict
+                          </span>
+                        )}
                       </td>
                       <td style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{rule.explanation}</td>
                     </tr>

@@ -27,6 +27,9 @@ from cv.barcode_scanner import scan_barcodes_and_qr
 from cv.readability import analyze_font_readability
 from ocr.engine import extract_text_from_image
 from extraction.extractor import extract_declarations
+from extraction.gemini_extractor import (
+    should_call_gemini, extract_with_gemini, fuse_gemini_evidence, normalize_declaration_evidence
+)
 from rules.engine import evaluate_compliance, load_legal_rules
 from reporting.pdf_report import generate_inspection_pdf
 from database.db import (
@@ -165,10 +168,20 @@ async def scan_product(
     """
     inspection_id = f"INS-{uuid.uuid4().hex[:8].upper()}"
 
+    # Extract clean string values if called programmatically where defaults are Form objects
+    raw_user_mode = getattr(user_mode, "default", user_mode) if hasattr(user_mode, "default") else user_mode
+    user_mode = str(raw_user_mode or "public")
+
+    raw_category = getattr(product_category, "default", product_category) if hasattr(product_category, "default") else product_category
+    product_category = str(raw_category or "packaged_goods")
+
+    raw_text = getattr(raw_text_input, "default", raw_text_input) if hasattr(raw_text_input, "default") else raw_text_input
+    raw_text_input = str(raw_text) if raw_text else None
+
     image_bytes = b""
     image_bytes_back = b""
 
-    if file:
+    if file and hasattr(file, "read"):
         image_bytes = await file.read()
         if len(image_bytes) > MAX_UPLOAD_SIZE:
             raise HTTPException(
@@ -176,7 +189,7 @@ async def scan_product(
                 detail=f"Uploaded front image file exceeds the maximum allowed size of {MAX_UPLOAD_SIZE // (1024*1024)}MB."
             )
 
-    if file_back:
+    if file_back and hasattr(file_back, "read"):
         image_bytes_back = await file_back.read()
         if len(image_bytes_back) > MAX_UPLOAD_SIZE:
             raise HTTPException(
@@ -350,6 +363,72 @@ async def scan_product(
     # 4. Information Extraction (Spatially-aware token evidence engine)
     extracted_declarations = extract_declarations(ocr_result["full_text"], tokens=ocr_result.get("tokens", []))
 
+    # =========================================================================
+    # 4b. GEMINI VISION FALLBACK (optional — only when OCR evidence is weak)
+    # =========================================================================
+    # The deterministic rule engine below remains the sole authority for
+    # PASS/FAIL/INCONCLUSIVE verdicts.  Gemini only supplements field evidence.
+    extraction_metadata = {
+        "ocr_used": True,
+        "gemini_used": False,
+        "gemini_reason": "Not evaluated",
+        "gemini_status": "skipped",
+    }
+
+    # Gemini fallback only available when a real image was submitted
+    if image_bytes:
+        try:
+            gemini_needed, gemini_reason = should_call_gemini(extracted_declarations)
+            if gemini_needed:
+                logger.info(
+                    f"[GEMINI_FALLBACK] ID={inspection_id} | Invoking Gemini. "
+                    f"Reason: {gemini_reason}"
+                )
+                gemini_fields = extract_with_gemini(image_bytes, product_category)
+
+                if gemini_fields:
+                    extracted_declarations = fuse_gemini_evidence(
+                        extracted_declarations, gemini_fields
+                    )
+                    extraction_metadata.update({
+                        "gemini_used": True,
+                        "gemini_reason": gemini_reason,
+                        "gemini_status": "success",
+                        "gemini_fields_extracted": len(gemini_fields),
+                    })
+                    logger.info(
+                        f"[GEMINI_FALLBACK] ID={inspection_id} | Fused "
+                        f"{len(gemini_fields)} field(s) from Gemini."
+                    )
+                else:
+                    extraction_metadata.update({
+                        "gemini_used": True,
+                        "gemini_reason": gemini_reason,
+                        "gemini_status": "no_fields_returned",
+                    })
+                    logger.info(
+                        f"[GEMINI_FALLBACK] ID={inspection_id} | Gemini returned "
+                        "no usable fields; OCR result unchanged."
+                    )
+            else:
+                extraction_metadata.update({
+                    "gemini_reason": gemini_reason,
+                    "gemini_status": "skipped_ocr_sufficient",
+                })
+        except Exception as _gemini_pipeline_exc:
+            # Must NEVER crash the scan endpoint
+            logger.error(
+                f"[GEMINI_FALLBACK] ID={inspection_id} | Non-fatal error: "
+                f"{_gemini_pipeline_exc}"
+            )
+            extraction_metadata.update({
+                "gemini_status": "error",
+                "gemini_reason": "Internal error — see server logs",
+            })
+
+    # 4c. Strict Evidence Contract Normalization (Ensures VERIFIED => non-null value)
+    extracted_declarations = normalize_declaration_evidence(extracted_declarations)
+
     # Font size & Rule 9 readability assessment
     readability_analysis = analyze_font_readability(
         tokens=ocr_result.get("tokens", []),
@@ -392,6 +471,7 @@ async def scan_product(
         "ocr_result": ocr_result,
         "ocr_text": ocr_result.get("full_text", ""),
         "extracted_declarations": extracted_declarations,
+        "extraction_metadata": extraction_metadata,   # Gemini augmentation metadata
         "barcode_data": barcode_data,
         "readability_analysis": readability_analysis,
         "compliance_report": compliance_report,

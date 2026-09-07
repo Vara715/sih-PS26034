@@ -88,8 +88,22 @@ def generate_inspection_pdf(scan_data: Dict[str, Any]) -> bytes:
         clause = (r.get("rule_clause", "") + " " * 16)[:16]
         field = (r.get("target_field", "") + " " * 22)[:22]
         status = (r.get("status", "") + " " * 14)[:14]
-        raw_ev = r.get("evidence_text") or r.get("explanation") or "Not declared"
-        ev_text = _escape_pdf_text(str(raw_ev))[:38]
+        raw_ev = r.get("evidence_text")
+        if not raw_ev or str(raw_ev).strip().lower() in ("none", "null", ""):
+            raw_ev = r.get("explanation") or "Not declared"
+            if str(raw_ev).strip().lower() in ("none", "null", ""):
+                raw_ev = "Not declared"
+
+        src = r.get("source")
+        src_tag = ""
+        if src == "gemini":
+            src_tag = "[GEM] "
+        elif src == "ocr+gemini":
+            src_tag = "[OCR+G] "
+        elif src == "ocr":
+            src_tag = "[OCR] "
+
+        ev_text = _escape_pdf_text(f"{src_tag}{raw_ev}".strip())[:38]
 
         row_str = f"{clause} {field} {status} {ev_text}"
         stream_lines.append("BT")

@@ -69,9 +69,11 @@ def evaluate_compliance(
         field_data = extracted_data.get(target_field, {})
 
         status = "FAIL"
-        evidence_text = field_data.get("raw_text")
-        explanation = field_data.get("evidence_reason") or field_data.get("invalid_reason") or ""
+        evidence_text = field_data.get("raw_text") or field_data.get("visible_text")
+        if not evidence_text and field_data.get("value") is not None:
+            evidence_text = str(field_data.get("value"))
 
+        explanation = field_data.get("evidence_reason") or field_data.get("invalid_reason") or ""
         field_status = field_data.get("status")
         field_detected = bool(field_data.get("detected"))
 
@@ -84,121 +86,149 @@ def evaluate_compliance(
 
         # Specific Field Validation Logic
         if target_field == "mrp":
-            if field_status == "VERIFIED" and field_detected:
-                val = field_data.get("value")
+            val = field_data.get("value")
+            if field_status == "VERIFIED" and field_detected and val is not None:
                 has_taxes = field_data.get("has_taxes_clause", True)
-                status = "PASS" if val is not None else "FAIL"
+                status = "PASS"
+                evidence_text = evidence_text or f"₹{val}"
                 explanation = f"MRP verified: ₹{val}" + (" (incl. of all taxes)." if has_taxes else ".")
-            elif field_status == "INCONCLUSIVE":
+            elif field_status == "INCONCLUSIVE" or (field_detected and val is None):
                 status = "INCONCLUSIVE"
-                explanation = explanation or "MRP candidate evidence is inconclusive or ambiguous."
+                explanation = explanation or "MRP candidate evidence is inconclusive or missing value."
             else:
                 status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Maximum Retail Price (MRP) declaration could not be detected on the package label."
 
         elif target_field == "net_quantity":
-            if field_status == "VERIFIED" and field_detected:
-                val = field_data.get("value")
-                unit = field_data.get("unit")
-                is_standard = field_data.get("is_standard_metric", True)
+            val = field_data.get("value")
+            unit = field_data.get("unit")
+            is_standard = field_data.get("is_standard_metric", True)
 
-                if val is not None and is_standard:
+            if field_status == "VERIFIED" and field_detected and val is not None:
+                if is_standard:
                     status = "PASS"
-                    explanation = f"Net Quantity verified: {val} {unit} (Standard metric unit)."
-                elif val is not None:
-                    status = "FAIL"
-                    explanation = f"Net Quantity found ({val} {unit}), but unit is non-standard metric."
+                    evidence_text = evidence_text or f"{val} {unit or ''}".strip()
+                    explanation = f"Net Quantity verified: {val} {unit or ''} (Standard metric unit).".replace("  ", " ")
                 else:
                     status = "FAIL"
-            elif field_status == "INCONCLUSIVE":
+                    explanation = f"Net Quantity found ({val} {unit or ''}), but unit is non-standard metric."
+            elif field_status == "INCONCLUSIVE" or (field_detected and val is None):
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Net Quantity declaration evidence is inconclusive."
             else:
-                status = "FAIL"
+                status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Net Quantity declaration missing or unverified on package label."
 
         elif target_field == "manufacturing_date":
-            if field_status == "VERIFIED" and field_detected:
-                date_str = field_data.get("date_str")
-                is_valid = field_data.get("is_valid", True)
-                invalid_reason = field_data.get("invalid_reason", "")
+            date_str = field_data.get("date_str") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            is_valid = field_data.get("is_valid", True)
+            invalid_reason = field_data.get("invalid_reason", "")
 
+            if field_status == "VERIFIED" and field_detected and date_str is not None:
                 if is_valid:
                     status = "PASS"
+                    evidence_text = evidence_text or date_str
                     explanation = f"Month and Year of Manufacture/Packing verified: {date_str}."
                 else:
                     status = "FAIL"
                     explanation = f"Invalid Manufacturing Date detected '{date_str}': {invalid_reason}"
-            elif field_status == "INCONCLUSIVE":
+            elif field_status == "INCONCLUSIVE" or (field_detected and date_str is None):
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Mfg/Packing date evidence is inconclusive."
             else:
-                status = "FAIL"
+                status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Month and Year of Manufacture or Packing declaration is missing."
 
         elif target_field == "manufacturer":
-            if field_status == "VERIFIED" and field_detected:
-                details = field_data.get("details")
+            details = field_data.get("details") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            if field_status == "VERIFIED" and field_detected and details is not None:
                 status = "PASS"
+                evidence_text = evidence_text or details
                 explanation = f"Manufacturer/Packer details verified: {details}."
-            elif field_status == "INCONCLUSIVE":
+            elif field_status == "INCONCLUSIVE" or (field_detected and details is None):
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Manufacturer name and address details are inconclusive."
             else:
-                status = "FAIL"
+                status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Manufacturer or Packer name/address declaration is missing."
 
         elif target_field == "consumer_care":
-            if field_status == "VERIFIED" and field_detected:
-                phone = field_data.get("phone")
-                email = field_data.get("email")
+            phone = field_data.get("phone")
+            email = field_data.get("email")
+            contact_val = field_data.get("value")
+            has_contact = bool(phone or email or contact_val)
+
+            if field_status == "VERIFIED" and field_detected and has_contact:
                 status = "PASS"
-                explanation = f"Consumer Care contact verified: Phone ({phone or 'N/A'}), Email ({email or 'N/A'})."
-            elif field_status == "INCONCLUSIVE":
+                contact_desc = []
+                if phone: contact_desc.append(f"Phone ({phone})")
+                if email: contact_desc.append(f"Email ({email})")
+                if not contact_desc and contact_val: contact_desc.append(f"Contact ({contact_val})")
+                evidence_text = evidence_text or (phone or email or str(contact_val))
+                explanation = f"Consumer Care contact verified: {', '.join(contact_desc)}."
+            elif field_status == "INCONCLUSIVE" or (field_detected and not has_contact):
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Consumer Care contact details are inconclusive."
             else:
-                status = "FAIL"
+                status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Consumer Care contact details (phone number or email) are missing."
 
         elif target_field == "generic_name":
-            if field_status == "VERIFIED" and field_detected:
-                name = field_data.get("name")
+            name = field_data.get("name") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            if field_status == "VERIFIED" and field_detected and name is not None:
                 status = "PASS"
+                evidence_text = evidence_text or name
                 explanation = f"Generic commodity name verified: '{name}'."
-            elif field_status == "INCONCLUSIVE":
+            elif field_status == "INCONCLUSIVE" or (field_detected and name is None):
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Generic commodity name is inconclusive."
             else:
-                status = "FAIL"
+                status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Generic/common commodity name is missing."
 
         elif target_field == "country_of_origin":
-            if field_status == "VERIFIED" and field_detected:
-                country = field_data.get("country")
+            country = field_data.get("country") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            if field_status == "VERIFIED" and field_detected and country is not None:
                 status = "PASS"
+                evidence_text = evidence_text or country
                 explanation = f"Country of Origin explicitly verified: {country}."
             else:
                 if product_category == "imported":
                     status = "FAIL"
                     explanation = "Mandatory Country of Origin declaration missing on imported package (Rule 6(1)(c))."
                 else:
-                    status = "PASS"
-                    explanation = "Domestic package: Implicit origin verified via Indian manufacturer postal address (Rule 6(1)(b)/(c))."
+                    mfg_data = extracted_data.get("manufacturer", {})
+                    mfg_val = mfg_data.get("details") or mfg_data.get("value")
+                    mfg_verified = (mfg_data.get("status") == "VERIFIED" and bool(mfg_data.get("detected")) and mfg_val is not None)
+                    if mfg_verified:
+                        status = "PASS"
+                        evidence_text = f"India (Implicit via: {str(mfg_val)[:40]})"
+                        explanation = f"Domestic package: Implicit origin verified via Indian manufacturer address ({str(mfg_val)[:45]})."
+                    else:
+                        status = "INCONCLUSIVE"
+                        explanation = "Country of Origin not declared and domestic manufacturer address unverified."
 
         elif target_field == "unit_sale_price":
-            if field_status == "VERIFIED" and field_detected:
+            usp_val = field_data.get("value")
+            if field_status == "VERIFIED" and field_detected and (usp_val is not None or (evidence_text and str(evidence_text).strip())):
                 status = "PASS"
+                evidence_text = evidence_text or str(usp_val)
                 explanation = f"Unit Sale Price verified: {evidence_text}."
             else:
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Unit Sale Price declaration not detected."
 
         elif target_field == "expiry_date":
-            if field_status == "VERIFIED" and field_detected:
-                date_str = field_data.get("date_str")
-                status = "PASS"
-                explanation = f"Expiry Date / Best Before verified: {date_str}."
+            date_str = field_data.get("date_str") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            is_valid = field_data.get("is_valid", True)
+            if field_status == "VERIFIED" and field_detected and date_str is not None:
+                if is_valid:
+                    status = "PASS"
+                    evidence_text = evidence_text or date_str
+                    explanation = f"Expiry Date / Best Before verified: {date_str}."
+                else:
+                    status = "FAIL"
+                    explanation = f"Invalid Expiry Date detected '{date_str}'."
             else:
                 if product_category == "food":
                     status = "FAIL"
@@ -208,27 +238,30 @@ def evaluate_compliance(
                     explanation = explanation or "Expiry Date or Best Before declaration not detected (optional for non-perishable commodity)."
 
         elif target_field == "dimensions":
-            if field_status == "VERIFIED" and field_detected:
-                size_str = field_data.get("size_str")
+            size_str = field_data.get("size_str") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            if field_status == "VERIFIED" and field_detected and size_str is not None:
                 status = "PASS"
+                evidence_text = evidence_text or size_str
                 explanation = f"Package Dimensions / Size verified: {size_str}."
             else:
                 status = "INCONCLUSIVE"
                 explanation = explanation or "Package Dimensions / Size declaration not detected."
 
         elif target_field == "fssai_license":
-            if field_status == "VERIFIED" and field_detected:
-                lic = field_data.get("license_number")
+            lic = field_data.get("license_number") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            if field_status == "VERIFIED" and field_detected and lic is not None:
                 status = "PASS"
+                evidence_text = evidence_text or lic
                 explanation = f"FSSAI Food Safety License verified: {lic}."
             else:
                 status = "INCONCLUSIVE"
                 explanation = explanation or "FSSAI Food Safety License number not detected on package label."
 
         elif target_field == "batch_number":
-            if field_status == "VERIFIED" and field_detected:
-                bno = field_data.get("batch_number")
+            bno = field_data.get("batch_number") or (str(field_data.get("value")) if field_data.get("value") is not None else None)
+            if field_status == "VERIFIED" and field_detected and bno is not None:
                 status = "PASS"
+                evidence_text = evidence_text or bno
                 explanation = f"Batch / Lot identification code verified: {bno}."
             else:
                 status = "INCONCLUSIVE"
@@ -248,9 +281,13 @@ def evaluate_compliance(
             "target_field": target_field,
             "is_mandatory": is_mandatory,
             "status": status,
-            "evidence_text": evidence_text,
+            "evidence_text": evidence_text if status == "PASS" else (evidence_text or None),
             "explanation": explanation,
-            "legal_source": f"Legal Metrology (Packaged Commodities) Rules, 2011 - {rule['rule_clause']}"
+            "legal_source": f"Legal Metrology (Packaged Commodities) Rules, 2011 - {rule['rule_clause']}",
+            "source": field_data.get("source", "ocr"),
+            "confidence": field_data.get("confidence", 0.0),
+            "fusion_case": field_data.get("fusion_case"),
+            "conflict": field_data.get("conflict", False),
         })
 
     # Determine 3-State Verdict based on Mandatory Rules
