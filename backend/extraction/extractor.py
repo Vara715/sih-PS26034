@@ -479,24 +479,41 @@ def extract_expiry_date_evidence(text: str, normalized: str, tokens: List[Dict[s
             "evidence_reason": f"Best Before period declaration '{clause}' verified."
         }
 
-    # Pattern 2: Explicit Anchored Expiry Date (e.g. EXP 28/AUG/2026 or Expiry Date: 28-08-2026)
-    anchored_pattern = r"(?:Expiry\s*Date|Exp\s*Date|Use\s*By|Expiry|EXP)\b\.?\s*[:\-\s]*([0-3]?\d)?[\/\-\.\s]*([A-Za-z]{3}|\d{1,2})[\/\-\.\s]*(20\d{2}|\d{2})\b"
-    match = re.search(anchored_pattern, normalized, re.IGNORECASE)
-
-    if match:
-        day = match.group(1)
-        month = match.group(2)
-        year = match.group(3)
+    # Pattern 2: Explicit Anchored Expiry Date - DD/MM/YYYY or DD-MMM-YY
+    anchored_dd = r"(?:Expiry\s*Date|Exp\s*Date|Use\s*By|Expiry|EXP|Best\s*Before)\b\.?\s*(?:Date)?\s*[:\-\s]*([0-3]?\d)[\/\-\.\s]+([A-Za-z]{3}|\d{1,2})[\/\-\.\s]+(20\d{2}|\d{2})\b"
+    match_dd = re.search(anchored_dd, normalized, re.IGNORECASE)
+    if match_dd:
+        day = match_dd.group(1)
+        month = match_dd.group(2)
+        year = match_dd.group(3)
         if len(year) == 2:
             year = "20" + year
-
-        date_str = f"{day + '/' if day else ''}{month}/{year}"
+        date_str = f"{day}/{month}/{year}"
         return {
             "detected": True,
             "status": "VERIFIED",
             "date_str": date_str,
-            "raw_text": match.group(0),
-            "evidence_reason": f"Expiry date '{date_str}' verified with explicit expiry anchor."
+            "raw_text": match_dd.group(0),
+            "evidence_reason": f"Expiry date '{date_str}' verified with explicit date anchor."
+        }
+
+    # Pattern 3: Explicit Anchored Expiry Date - MM/YYYY without day
+    anchored_mm = r"(?:Expiry\s*Date|Exp\s*Date|Use\s*By|Expiry|EXP|Best\s*Before)\b\.?\s*(?:Date)?\s*[:\-\s]*([A-Za-z]{3}|0?[1-9]|1[0-2])[\/\-\.\s]+(20\d{2}|\d{2})\b"
+    match_mm = re.search(anchored_mm, normalized, re.IGNORECASE)
+    if match_mm:
+        month = match_mm.group(1)
+        year = match_mm.group(2)
+        if len(year) == 2:
+            year = "20" + year
+        if len(month) == 1 and month.isdigit():
+            month = "0" + month
+        date_str = f"{month}/{year}"
+        return {
+            "detected": True,
+            "status": "VERIFIED",
+            "date_str": date_str,
+            "raw_text": match_mm.group(0),
+            "evidence_reason": f"Expiry date '{date_str}' verified with explicit MM/YYYY date anchor."
         }
 
     # Pattern 3: Proximity check, EXCLUDING dates attached to PKD/MFD anchors

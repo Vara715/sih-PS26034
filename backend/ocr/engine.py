@@ -6,6 +6,7 @@ Preserves token bounding-box coordinates [x1, y1, x2, y2], confidence scores,
 OCR engine source, and multi-pass preprocessing variants for spatial evidence extraction.
 """
 
+import logging
 import io
 import os
 import sys
@@ -14,6 +15,8 @@ import shutil
 from typing import Dict, Any, List, Optional
 from PIL import Image
 import numpy as np
+
+logger = logging.getLogger("legal_metrology.ocr")
 
 # Ensure user site packages are accessible for PaddleOCR/Paddlex
 user_site = site.getusersitepackages()
@@ -91,27 +94,31 @@ except ImportError:
 
 _easyocr_reader = None
 _paddleocr_reader = None
+_easyocr_attempted = False
+_paddleocr_attempted = False
 
 def get_easyocr_reader():
-    """Lazy initializes EasyOCR reader model."""
-    global _easyocr_reader
-    if _easyocr_reader is None and EASYOCR_AVAILABLE:
+    """Lazy initializes EasyOCR reader model with offline safety."""
+    global _easyocr_reader, _easyocr_attempted
+    if not _easyocr_attempted and EASYOCR_AVAILABLE:
+        _easyocr_attempted = True
         try:
             _easyocr_reader = easyocr.Reader(['en'], gpu=False)
         except Exception as e:
-            print(f"[OCR_ENGINE] EasyOCR init warning: {e}")
+            logger.warning(f"[OCR_ENGINE] EasyOCR offline or unavailable: {e}")
             _easyocr_reader = None
     return _easyocr_reader
 
 
 def get_paddleocr_reader():
-    """Lazy initializes PaddleOCR reader model."""
-    global _paddleocr_reader
-    if _paddleocr_reader is None and PADDLEOCR_AVAILABLE:
+    """Lazy initializes PaddleOCR reader model with offline safety."""
+    global _paddleocr_reader, _paddleocr_attempted
+    if not _paddleocr_attempted and PADDLEOCR_AVAILABLE:
+        _paddleocr_attempted = True
         try:
             _paddleocr_reader = PaddleOCR(lang='en')
         except Exception as e:
-            print(f"[OCR_ENGINE] PaddleOCR init warning: {e}")
+            logger.warning(f"[OCR_ENGINE] PaddleOCR offline or unavailable: {e}")
             _paddleocr_reader = None
     return _paddleocr_reader
 
@@ -381,8 +388,28 @@ def extract_text_from_image(
             all_confs.append(res["confidence"])
             primary_engine = "EasyOCR"
 
-    # Synthetic String Buffer Fallback (for string byte buffers in tests)
+    # Synthetic String Buffer Fallback (STRICTLY for test string buffers, NEVER real binary images)
     if not all_tokens:
+        is_binary_image = (
+            image_bytes.startswith(b"\xff\xd8\xff") or
+            image_bytes.startswith(b"\x89PNG") or
+            image_bytes.startswith(b"RIFF") or
+            image_bytes.startswith(b"BM") or
+            image_bytes.startswith(b"GIF8") or
+            image_bytes.startswith(b"II*\x00") or image_bytes.startswith(b"MM\x00*")
+        )
+        if is_binary_image:
+            return {
+                "success": False,
+                "error": "No recognizable text detected on label.",
+                "full_text": "",
+                "lines": [],
+                "tokens": [],
+                "confidence": 0.0,
+                "engine": "none",
+                "is_synthetic": False
+            }
+
         text_content = ""
         try:
             text_content = image_bytes.decode("utf-8", errors="ignore").strip()

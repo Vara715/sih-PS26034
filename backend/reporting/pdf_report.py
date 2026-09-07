@@ -82,11 +82,14 @@ def generate_inspection_pdf(scan_data: Dict[str, Any]) -> bytes:
 
     # Rule Rows
     y -= 26
-    for r in rule_results[:12]:  # fit on page 1
+    for r in rule_results[:14]:
+        if y < 105:
+            break
         clause = (r.get("rule_clause", "") + " " * 16)[:16]
         field = (r.get("target_field", "") + " " * 22)[:22]
         status = (r.get("status", "") + " " * 14)[:14]
-        ev_text = _escape_pdf_text(str(r.get("evidence_text") or "Not declared"))[:38]
+        raw_ev = r.get("evidence_text") or r.get("explanation") or "Not declared"
+        ev_text = _escape_pdf_text(str(raw_ev))[:38]
 
         row_str = f"{clause} {field} {status} {ev_text}"
         stream_lines.append("BT")

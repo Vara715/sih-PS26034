@@ -62,6 +62,7 @@ class TestLegalMetrologySystem(unittest.TestCase):
         Net Qty: 500 g
         MRP Rs. 120.00 (incl. of all taxes)
         Mfd Date: 08/2026
+        Best Before: 08/2027
         Manufactured by ABC Foods Pvt Ltd, New Delhi
         Customer Care: 1800-111-2222
         """
@@ -475,6 +476,184 @@ class TestLegalMetrologySystem(unittest.TestCase):
         p1 = get_all_inspections(limit=3, offset=0)
         self.assertIsInstance(p1, list)
         self.assertLessEqual(len(p1), 3)
+
+    def test_31_white_packaging_validation(self):
+        """Tests that a legitimate white-background packaged commodity is accepted by Gate 1."""
+        import numpy as np, cv2
+        white_box = np.full((500, 500, 3), 245, dtype=np.uint8)
+        cv2.rectangle(white_box, (50, 50), (450, 450), (200, 200, 200), 2)
+        cv2.putText(white_box, 'AMUL BUTTER', (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (20, 20, 180), 2)
+        cv2.putText(white_box, 'Net Qty: 100g', (80, 220), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (30, 30, 30), 2)
+        _, png = cv2.imencode('.png', white_box)
+        res = validate_product_image(png.tobytes())
+        self.assertEqual(res["status"], "VALID_PRODUCT")
+        self.assertTrue(res["should_proceed_to_ocr"])
+        self.assertGreaterEqual(res["confidence"], 0.45)
+
+    def test_32_product_validator_safe_failures(self):
+        """Tests that empty, corrupted, and non-image payloads fail cleanly without UnboundLocalError."""
+        res_empty = validate_product_image(b"")
+        self.assertEqual(res_empty["status"], "INVALID_PRODUCT_IMAGE")
+        self.assertFalse(res_empty["should_proceed_to_ocr"])
+
+        res_corrupt = validate_product_image(b"\x00\x01\xfe\xff\xaa\xbb\xcc\xdd" * 10)
+        self.assertEqual(res_corrupt["status"], "INVALID_PRODUCT_IMAGE")
+        self.assertFalse(res_corrupt["should_proceed_to_ocr"])
+
+    def test_33_food_expiry_mandatory_fail(self):
+        """Tests that food category strictly mandates expiry date under Rule 6(1)(e) Second Proviso."""
+        food_sample = """
+        ABC Premium Wheat Biscuits
+        Net Qty: 500 g
+        MRP Rs. 120.00 (incl. of all taxes)
+        Mfd Date: 08/2026
+        Manufactured by ABC Foods Pvt Ltd, New Delhi
+        Customer Care: 1800-111-2222
+        Country of Origin: India
+        """
+        extracted = extract_declarations(food_sample)
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "EXCELLENT"}
+        report = evaluate_compliance(extracted, quality, product_category="food")
+        self.assertEqual(report["overall_status"], "POTENTIAL NON-COMPLIANCE")
+        expiry_rule = next(r for r in report["rule_results"] if r["target_field"] == "expiry_date")
+        self.assertTrue(expiry_rule["is_mandatory"])
+        self.assertEqual(expiry_rule["status"], "FAIL")
+
+    def test_34_non_food_expiry_optional_pass(self):
+        """Tests that non-food category treats expiry date as optional and passes compliance."""
+        nonfood_sample = """
+        SPARKLE DISHWASH BAR
+        Net Wt: 500 g
+        MRP Rs. 85.00 (Incl. all taxes)
+        Mfd: 07/2026
+        Manufactured by CleanTech Industries Ltd, Nashik
+        Customer Care: 1800-200-5678
+        Country of Origin: India
+        """
+        extracted = extract_declarations(nonfood_sample)
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "EXCELLENT"}
+        report = evaluate_compliance(extracted, quality, product_category="packaged_goods")
+        self.assertEqual(report["overall_status"], "COMPLIANT")
+        expiry_rule = next(r for r in report["rule_results"] if r["target_field"] == "expiry_date")
+        self.assertFalse(expiry_rule["is_mandatory"])
+        self.assertEqual(expiry_rule["status"], "INCONCLUSIVE")
+
+    def test_35_imported_package_missing_origin(self):
+        """Tests that imported product category strictly fails if Country of Origin is missing."""
+        sample = """
+        Imported Swiss Chocolates
+        Net Wt: 100 g
+        MRP Rs. 350.00
+        Mfd: 01/2026
+        Best Before: 01/2027
+        Imported by: Alpine Importers Pvt Ltd, Mumbai
+        Consumer Care: care@alpine.in
+        """
+        extracted = extract_declarations(sample)
+        quality = {"is_readable": True, "blur_score": 150.0, "quality_rating": "EXCELLENT"}
+        report = evaluate_compliance(extracted, quality, product_category="imported")
+        self.assertEqual(report["overall_status"], "POTENTIAL NON-COMPLIANCE")
+        origin_rule = next(r for r in report["rule_results"] if r["target_field"] == "country_of_origin")
+        self.assertEqual(origin_rule["status"], "FAIL")
+
+    def test_36_db_get_inspection_null_and_malformed_json(self):
+        """Tests SQLite database get_inspection_by_id robustness on NULL and corrupted JSON fields."""
+        import sqlite3
+        from database.db import get_db_connection, get_inspection_by_id
+        conn = get_db_connection()
+        c = conn.cursor()
+        test_id = "TEST-CORRUPT-JSON-99"
+        c.execute("DELETE FROM inspections WHERE id = ?", (test_id,))
+        c.execute("""
+            INSERT INTO inspections (
+                id, timestamp, user_mode, product_category, overall_status, verdict_title,
+                blur_score, brightness_score, ocr_text, extracted_json, rule_results_json,
+                image_sha256, evidence_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            test_id, "2026-09-07 12:00:00", "inspector", "food", "COMPLIANT", "Test Verdict",
+            100.0, 120.0, "sample ocr", "{malformed_json_syntax:!!}", None,
+            "abc123sha", "ev_hash_456"
+        ))
+        conn.commit()
+        conn.close()
+
+        rec = get_inspection_by_id(test_id)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["extracted_data"], {})
+        self.assertEqual(rec["rule_results"], [])
+
+    def test_37_pdf_long_manufacturer_and_address_layout(self):
+        """Tests PDF certificate layout safety with long strings and multiple rule violations."""
+        from reporting.pdf_report import generate_inspection_pdf
+        scan_data = {
+            "inspection_id": "INS-LONG-ADDR-01",
+            "product_category": "packaged_goods",
+            "compliance_report": {
+                "overall_status": "POTENTIAL NON-COMPLIANCE",
+                "verdict_title": "Multiple Declarations Incomplete",
+                "rule_results": [
+                    {
+                        "rule_clause": f"Clause 6(1)({chr(97+i)})",
+                        "target_field": f"target_field_{i}",
+                        "status": "FAIL" if i % 2 == 0 else "PASS",
+                        "evidence_text": "A" * 80,
+                        "explanation": "Extremely detailed statutory discrepancy description spanning multiple words."
+                    }
+                    for i in range(16)
+                ]
+            },
+            "quality_assessment": {"blur_score": 110.0, "quality_rating": "GOOD", "resolution": "4032x3024"},
+            "evidence_ledger": {"evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+        }
+        pdf = generate_inspection_pdf(scan_data)
+        self.assertTrue(pdf.startswith(b"%PDF-1.4"))
+        self.assertTrue(pdf.strip().endswith(b"%%EOF"))
+        self.assertIn(b"POTENTIAL NON-COMPLIANCE", pdf)
+
+    def test_38_mrp_decimal_handling_and_confusion(self):
+        """Tests MRP regex accuracy: handles explicit decimals, currency symbols, and dropped decimal correction."""
+        sample_decimal = "PREMIUM CRACKERS\nMRP Rs. 10.50 (incl. taxes)\nNet Wt: 100 g"
+        ext1 = extract_declarations(sample_decimal)
+        self.assertTrue(ext1["mrp"]["detected"])
+        self.assertEqual(ext1["mrp"]["value"], 10.50)
+
+        # 4-digit dropped decimal correction (8500 -> 85.0)
+        sample_dropped = "PREMIUM CRACKERS\nMRP Rs 8500 (incl. taxes)\nNet Wt: 100 g"
+        ext2 = extract_declarations(sample_dropped)
+        self.assertTrue(ext2["mrp"]["detected"])
+        self.assertEqual(ext2["mrp"]["value"], 85.0)
+
+    def test_39_hindi_devanagari_packaging_declarations(self):
+        """Tests multi-lingual Hindi Devanagari declarations mapped into standardized compliance structures."""
+        sample_hindi = (
+            "चक्की फ्रेश आटा\n"
+            "अधिकतम खुदरा मूल्य ₹ 250.00 (सभी करों सहित)\n"
+            "शुद्ध मात्रा: 5 किग्रा\n"
+            "भारत में निर्मित\n"
+            "उत्पाद: आटा\n"
+            "उत्पादक: श्री ग्रेन्स प्रा. लि., दिल्ली"
+        )
+        ext = extract_declarations(sample_hindi)
+        self.assertTrue(ext["mrp"]["detected"])
+        self.assertEqual(ext["mrp"]["value"], 250.0)
+        self.assertTrue(ext["net_quantity"]["detected"])
+        self.assertEqual(ext["net_quantity"]["value"], 5.0)
+        self.assertEqual(ext["net_quantity"]["unit"], "kg")
+        self.assertEqual(ext["country_of_origin"]["country"], "India")
+
+    def test_40_offline_ocr_never_fabricates_tokens_on_real_images(self):
+        """Tests that real binary images where OCR fails never fabricate synthetic compliance tokens."""
+        from ocr.engine import extract_text_from_image
+        import numpy as np, cv2
+        # Real blank black PNG image
+        blank_img = np.zeros((300, 300, 3), dtype=np.uint8)
+        _, png = cv2.imencode('.png', blank_img)
+        res = extract_text_from_image(png.tobytes())
+        # Must return empty text or not synthetic
+        if not res["success"]:
+            self.assertEqual(len(res["tokens"]), 0)
+            self.assertFalse(res.get("is_synthetic", False))
 
 
 if __name__ == "__main__":

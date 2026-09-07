@@ -75,6 +75,13 @@ def evaluate_compliance(
         field_status = field_data.get("status")
         field_detected = bool(field_data.get("detected"))
 
+        # Category-aware mandatory determination
+        is_mandatory = rule.get("is_mandatory", False)
+        if target_field == "expiry_date":
+            # Under Rule 6(1)(e) Second Proviso & FSSAI Packaging Regulations,
+            # Expiry / Best Before is mandatory for food commodities.
+            is_mandatory = (product_category == "food")
+
         # Specific Field Validation Logic
         if target_field == "mrp":
             if field_status == "VERIFIED" and field_detected:
@@ -86,7 +93,7 @@ def evaluate_compliance(
                 status = "INCONCLUSIVE"
                 explanation = explanation or "MRP candidate evidence is inconclusive or ambiguous."
             else:
-                status = "FAIL" if rule["is_mandatory"] else "INCONCLUSIVE"
+                status = "FAIL" if is_mandatory else "INCONCLUSIVE"
                 explanation = explanation or "Maximum Retail Price (MRP) declaration could not be detected on the package label."
 
         elif target_field == "net_quantity":
@@ -193,8 +200,12 @@ def evaluate_compliance(
                 status = "PASS"
                 explanation = f"Expiry Date / Best Before verified: {date_str}."
             else:
-                status = "INCONCLUSIVE"
-                explanation = explanation or "Expiry Date or Best Before declaration not detected."
+                if product_category == "food":
+                    status = "FAIL"
+                    explanation = "Mandatory Expiry Date / Best Before declaration missing on packaged food commodity (Rule 6(1)(e) Second Proviso)."
+                else:
+                    status = "INCONCLUSIVE"
+                    explanation = explanation or "Expiry Date or Best Before declaration not detected (optional for non-perishable commodity)."
 
         elif target_field == "dimensions":
             if field_status == "VERIFIED" and field_detected:
@@ -235,7 +246,7 @@ def evaluate_compliance(
             "rule_name": rule["rule_name"],
             "rule_clause": rule["rule_clause"],
             "target_field": target_field,
-            "is_mandatory": rule["is_mandatory"],
+            "is_mandatory": is_mandatory,
             "status": status,
             "evidence_text": evidence_text,
             "explanation": explanation,

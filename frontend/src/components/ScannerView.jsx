@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { Camera, Tags, UploadCloud, FolderOpen, X, FlaskConical, CheckCircle2, XCircle, AlertTriangle, Type, Zap, Image as ImageIcon } from 'lucide-react';
 
 const SAMPLES = {
@@ -36,11 +36,13 @@ export default function ScannerView({
   onScan,
   isLoading
 }) {
+  const [activeSample, setActiveSample] = useState(null);
   const fileInputRefFront = useRef(null);
   const fileInputRefBack = useRef(null);
 
   const handleFrontFileChange = (file) => {
     if (!file) return;
+    setActiveSample(null); // Reset demo sample state when user uploads real image
     setSelectedFile(file);
     setOcrText('');
     const reader = new FileReader();
@@ -50,6 +52,7 @@ export default function ScannerView({
 
   const handleBackFileChange = (file) => {
     if (!file) return;
+    setActiveSample(null); // Reset demo sample state when user uploads real image
     setSelectedFileBack(file);
     setOcrText('');
     const reader = new FileReader();
@@ -74,8 +77,20 @@ export default function ScannerView({
   const applySample = (sampleKey) => {
     const sample = SAMPLES[sampleKey];
     if (sample) {
+      // 1. Clear any existing front/back file selections completely
+      setSelectedFile(null);
+      setPreviewUrl(null);
+      setSelectedFileBack(null);
+      setPreviewUrlBack(null);
+
+      // 2. Clear native input elements
+      if (fileInputRefFront.current) fileInputRefFront.current.value = '';
+      if (fileInputRefBack.current) fileInputRefBack.current.value = '';
+
+      // 3. Set text, category, and visual active state
       setOcrText(sample.text);
       setCategory(sample.category);
+      setActiveSample(sampleKey);
     }
   };
 
@@ -198,24 +213,27 @@ export default function ScannerView({
         <div className="sample-buttons">
           <button
             type="button"
-            className="sample-btn compliant"
+            className={`sample-btn compliant ${activeSample === 'compliant' ? 'active' : ''}`}
             onClick={() => applySample('compliant')}
+            style={activeSample === 'compliant' ? { outline: '2px solid #4ade80', background: 'rgba(74, 222, 128, 0.15)' } : {}}
           >
-            <CheckCircle2 size={14} /> Compliant Biscuit
+            <CheckCircle2 size={14} /> Compliant Biscuit {activeSample === 'compliant' ? '✓' : ''}
           </button>
           <button
             type="button"
-            className="sample-btn non-compliant"
+            className={`sample-btn non-compliant ${activeSample === 'notebookPaper' ? 'active' : ''}`}
             onClick={() => applySample('notebookPaper')}
+            style={activeSample === 'notebookPaper' ? { outline: '2px solid #f87171', background: 'rgba(248, 113, 113, 0.15)' } : {}}
           >
-            <XCircle size={14} /> Notebook "MRP ₹120"
+            <XCircle size={14} /> Notebook "MRP ₹120" {activeSample === 'notebookPaper' ? '✓' : ''}
           </button>
           <button
             type="button"
-            className="sample-btn blurry"
+            className={`sample-btn blurry ${activeSample === 'blurry' ? 'active' : ''}`}
             onClick={() => applySample('blurry')}
+            style={activeSample === 'blurry' ? { outline: '2px solid #facc15', background: 'rgba(250, 204, 21, 0.15)' } : {}}
           >
-            <AlertTriangle size={14} /> Blurry Image
+            <AlertTriangle size={14} /> Blurry Image {activeSample === 'blurry' ? '✓' : ''}
           </button>
         </div>
       </div>
@@ -231,7 +249,10 @@ export default function ScannerView({
           rows={3}
           placeholder="OCR detected text will appear here automatically, or type custom label text..."
           value={ocrText}
-          onChange={(e) => setOcrText(e.target.value)}
+          onChange={(e) => {
+            setOcrText(e.target.value);
+            setActiveSample(null);
+          }}
         />
       </div>
 

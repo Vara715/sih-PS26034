@@ -90,7 +90,9 @@ export default function App() {
     const formData = new FormData();
     if (selectedFile) formData.append('file', selectedFile);
     if (selectedFileBack) formData.append('file_back', selectedFileBack);
-    if (ocrText.trim()) formData.append('raw_text_input', ocrText.trim());
+    if (!selectedFile && !selectedFileBack && ocrText.trim()) {
+      formData.append('raw_text_input', ocrText.trim());
+    }
     formData.append('user_mode', currentMode);
     formData.append('product_category', category);
 

@@ -378,6 +378,20 @@ def get_inspection_by_id(inspection_id: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
 
+    extracted_data = {}
+    if row["extracted_json"]:
+        try:
+            extracted_data = json.loads(row["extracted_json"])
+        except Exception:
+            extracted_data = {}
+
+    rule_results = []
+    if row["rule_results_json"]:
+        try:
+            rule_results = json.loads(row["rule_results_json"])
+        except Exception:
+            rule_results = []
+
     return {
         "id": row["id"],
         "timestamp": row["timestamp"],
@@ -387,9 +401,9 @@ def get_inspection_by_id(inspection_id: str) -> Optional[Dict[str, Any]]:
         "verdict_title": row["verdict_title"],
         "blur_score": row["blur_score"],
         "brightness_score": row["brightness_score"],
-        "ocr_text": row["ocr_text"],
-        "extracted_data": json.loads(row["extracted_json"]),
-        "rule_results": json.loads(row["rule_results_json"]),
-        "image_sha256": row["image_sha256"],
-        "evidence_hash": row["evidence_hash"]
+        "ocr_text": row["ocr_text"] or "",
+        "extracted_data": extracted_data,
+        "rule_results": rule_results,
+        "image_sha256": row["image_sha256"] or "",
+        "evidence_hash": row["evidence_hash"] or ""
     }

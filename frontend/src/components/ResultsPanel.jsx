@@ -112,7 +112,7 @@ export default function ResultsPanel({ scanData, isLoading }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.6rem', fontSize: '0.78rem', background: 'rgba(0,0,0,0.2)', padding: '0.6rem', borderRadius: '6px' }}>
             <div>
               <span style={{ color: 'var(--text-secondary)' }}>Evidence Score:</span>{' '}
-              <strong style={{ color: input_validation.confidence >= 0.6 ? '#4ade80' : '#f87171' }}>
+              <strong style={{ color: input_validation.confidence >= 0.45 ? '#4ade80' : (input_validation.confidence >= 0.25 ? '#facc15' : '#f87171') }}>
                 {(input_validation.confidence * 100).toFixed(0)}%
               </strong>
             </div>
@@ -141,6 +141,19 @@ export default function ResultsPanel({ scanData, isLoading }) {
               </>
             )}
           </div>
+
+          {input_validation.status !== 'VALID_PRODUCT' && (
+            <div style={{ marginTop: '0.6rem', padding: '0.6rem 0.8rem', background: 'rgba(234, 179, 8, 0.12)', border: '1px solid rgba(234, 179, 8, 0.3)', borderRadius: '6px', fontSize: '0.8rem', color: '#fef08a' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, marginBottom: '2px' }}>
+                <Info size={14} /> Diagnostic Guidance:
+              </div>
+              <div>
+                {input_validation.status === 'INVALID_PRODUCT_IMAGE'
+                  ? 'Non-packaging media detected (flat document, notebook ruling, or screen). To evaluate statutory compliance, please capture an actual consumer packaged commodity.'
+                  : 'Product packaging evidence could not be verified with full certainty. Please capture a clear photograph showing the complete product boundaries and statutory declarations.'}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -252,10 +265,17 @@ export default function ResultsPanel({ scanData, isLoading }) {
       )}
 
       {/* Action Bar */}
-      <div className="action-bar" style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-        <button type="button" className="btn btn-primary" onClick={downloadPdf}>
-          <FileText size={16} /> Download Official PDF Certificate
-        </button>
+      <div className="action-bar" style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+        {evidence_ledger && overall_status !== 'INVALID_PRODUCT_IMAGE' && overall_status !== 'INCONCLUSIVE_INPUT' ? (
+          <button type="button" className="btn btn-primary" onClick={downloadPdf}>
+            <FileText size={16} /> Download Official PDF Certificate
+          </button>
+        ) : (
+          <div style={{ padding: '0.5rem 0.8rem', background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '6px', fontSize: '0.82rem', color: '#fca5a5', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <ShieldAlert size={15} />
+            <span>No compliance certificate generated because the package could not be verified.</span>
+          </div>
+        )}
         <button type="button" className="btn btn-outline" onClick={downloadReport}>
           <Download size={16} /> Download JSON Report
         </button>

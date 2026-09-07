@@ -32,18 +32,22 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 # Configurable Prototype Thresholds
-PRODUCT_CONFIDENCE_THRESHOLD = 0.60  # Score >= 0.60 => VALID_PRODUCT
-INCONCLUSIVE_THRESHOLD = 0.35        # Score < 0.35  => INVALID_PRODUCT_IMAGE; in-between => INCONCLUSIVE_INPUT
+# Score >= 0.45 => VALID_PRODUCT (tuned to avoid false rejection of white/light packaging)
+PRODUCT_CONFIDENCE_THRESHOLD = 0.45
+# Score < 0.25 => INVALID_PRODUCT_IMAGE; 0.25 <= Score < 0.45 => INCONCLUSIVE_INPUT
+INCONCLUSIVE_THRESHOLD = 0.25
 
 # Global cached DNN Model
 _DNN_MODEL = None
 _TRANSFORM = None
+_DNN_ATTEMPTED = False
 
 
 def _get_dnn_model():
-    """Lazy loads PyTorch MobileNetV2 pre-trained model."""
-    global _DNN_MODEL, _TRANSFORM
-    if _DNN_MODEL is None and TORCH_AVAILABLE:
+    """Lazy loads PyTorch MobileNetV2 pre-trained model with offline safety."""
+    global _DNN_MODEL, _TRANSFORM, _DNN_ATTEMPTED
+    if not _DNN_ATTEMPTED and TORCH_AVAILABLE:
+        _DNN_ATTEMPTED = True
         try:
             weights = MobileNet_V2_Weights.DEFAULT
             _DNN_MODEL = mobilenet_v2(weights=weights)
@@ -55,8 +59,9 @@ def _get_dnn_model():
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ])
         except Exception as e:
-            print(f"[PRODUCT_VALIDATOR] Model load warning: {e}")
+            # Cleanly handle offline environment without crashing or hanging
             _DNN_MODEL = None
+            _TRANSFORM = None
     return _DNN_MODEL, _TRANSFORM
 
 
@@ -69,10 +74,9 @@ PRODUCT_PACKAGING_KEYWORDS = {
 }
 
 NON_PRODUCT_DOCUMENT_KEYWORDS = {
-    'web_site', 'envelope', 'menu', 'binder', 'notebook', 'paper_towel', 'comic_book',
-    'crossword_puzzle', 'rule', 'slide_rule', 'scoreboard', 'handwriting', 'paper',
-    'screen', 'monitor', 'television', 'laptop', 'book_jacket', 'notebook_computer',
-    'payroll', 'newspaper', 'document'
+    'binder', 'notebook', 'paper_towel', 'crossword_puzzle', 'handwriting',
+    'screen', 'monitor', 'television', 'laptop', 'notebook_computer',
+    'payroll', 'newspaper'
 }
 
 
@@ -135,7 +139,6 @@ def _analyze_strict_hybrid_evidence(img: np.ndarray) -> Dict[str, Any]:
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=width * 0.25, maxLineGap=15)
     
     horizontal_lines_count = 0
-    line_y_coords = []
     if lines is not None:
         for line in lines:
             pts = np.array(line).reshape(-1)
@@ -144,22 +147,33 @@ def _analyze_strict_hybrid_evidence(img: np.ndarray) -> Dict[str, Any]:
                 angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
                 if angle < 6.0 or angle > 174.0:
                     horizontal_lines_count += 1
-                    line_y_coords.append((y1 + y2) / 2.0)
 
-    # Check if lines are spread evenly down the page (ruled notebook paper characteristic)
+    # Notebook paper specifically features wide horizontal ruling lines across the page
+    wide_lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80, minLineLength=int(width * 0.50), maxLineGap=20)
+    wide_line_y = []
+    if wide_lines is not None:
+        for line in wide_lines:
+            pts = np.array(line).reshape(-1)
+            if len(pts) >= 4:
+                x1, y1, x2, y2 = pts[:4]
+                angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
+                if angle < 5.0 or angle > 175.0:
+                    wide_line_y.append((y1 + y2) / 2.0)
+
+    # Check if wide lines are evenly spaced down the page (ruled notebook paper characteristic)
     is_regular_ruled = False
-    if len(line_y_coords) >= 5:
-        line_y_coords.sort()
-        diffs = np.diff(line_y_coords)
-        diffs_filtered = [d for d in diffs if d > 8]  # ignore duplicate lines
-        if len(diffs_filtered) >= 4:
-            std_diff = np.std(diffs_filtered)
-            mean_diff = np.mean(diffs_filtered)
-            if std_diff < mean_diff * 0.40:  # highly regular spacing = notebook paper!
+    if len(wide_line_y) >= 5:
+        wide_line_y.sort()
+        diffs = [d for d in np.diff(wide_line_y) if d > 12]
+        if len(diffs) >= 4:
+            std_diff = np.std(diffs)
+            mean_diff = np.mean(diffs)
+            if std_diff < mean_diff * 0.35:  # highly regular spacing across page = notebook paper!
                 is_regular_ruled = True
 
     breakdown["horizontal_lines_count"] = horizontal_lines_count
-    is_ruled_paper = is_regular_ruled or (horizontal_lines_count >= 8 and white_paper_ratio > 0.40)
+    breakdown["is_regular_ruled"] = is_regular_ruled
+    is_ruled_paper = is_regular_ruled and white_paper_ratio > 0.50
 
     # -------------------------------------------------------------------------
     # LAYER 3: FAST FOURIER TRANSFORM (FFT) SPATIAL FREQUENCY ANALYSIS
@@ -206,12 +220,13 @@ def _analyze_strict_hybrid_evidence(img: np.ndarray) -> Dict[str, Any]:
             breakdown["dnn_top5_predictions"] = top5_names
 
             package_matches = sum(1 for name in top5_names if any(kw in name for kw in PRODUCT_PACKAGING_KEYWORDS))
-            document_matches = sum(1 for name in top5_names if any(kw in name for kw in NON_PRODUCT_DOCUMENT_KEYWORDS))
+            top_is_document = any(kw in top_prediction_name for kw in NON_PRODUCT_DOCUMENT_KEYWORDS)
+            top_prob = top5_prob[0].item()
 
-            if package_matches > 0 and document_matches == 0:
+            if package_matches > 0 and not top_is_document:
                 dnn_is_package = True
                 dnn_score = 0.85
-            elif document_matches > 0 and (white_paper_ratio > 0.40 or sat_std_dev < 22.0 or is_ruled_paper):
+            elif top_is_document and top_prob >= 0.25 and (white_paper_ratio > 0.60 or is_ruled_paper):
                 dnn_is_document = True
                 dnn_score = 0.10
         except Exception as e:
@@ -223,56 +238,62 @@ def _analyze_strict_hybrid_evidence(img: np.ndarray) -> Dict[str, Any]:
     # -------------------------------------------------------------------------
     # ZERO-TRUST BASELINE EVIDENCE FUSION SCORING
     # -------------------------------------------------------------------------
-    # Baseline score: if NOT white paper and NOT ruled document, start at 0.30 baseline
-    if not dnn_is_document and not is_ruled_paper and white_paper_ratio < 0.60:
-        evidence_score = 0.30
+    # Baseline score: If not ruled paper and not identified as a document, grant baseline
+    if not dnn_is_document and not is_ruled_paper:
+        evidence_score = 0.35
     else:
         evidence_score = 0.00
 
     if dnn_is_package:
-        evidence_score += 0.45
+        evidence_score += 0.40
     elif not dnn_is_document:
-        evidence_score += 0.15
-
-    if sat_std_dev > 30.0:
-        evidence_score += 0.20
-    elif sat_std_dev > 15.0:
         evidence_score += 0.10
 
-    if color_std_dev > 35.0:
+    # Color saturation variation (printed packaging artwork vs monochrome paper)
+    if sat_std_dev > 25.0:
         evidence_score += 0.15
+    elif sat_std_dev > 12.0:
+        evidence_score += 0.08
 
+    # Intensity variation (branding, typography, contrast edges)
+    if color_std_dev > 30.0:
+        evidence_score += 0.12
+
+    # Physical contour boundaries
+    area_ratio = 0.0
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         c_max = max(contours, key=cv2.contourArea)
         area_ratio = cv2.contourArea(c_max) / float(width * height)
         breakdown["max_contour_area_ratio"] = round(area_ratio, 3)
-        if 0.10 <= area_ratio <= 0.90:
+        if 0.08 <= area_ratio <= 0.95:
             evidence_score += 0.15
 
-    # PENALTIES FOR PAPER / DOCUMENT CUES
+    # PENALTIES FOR PROVEN DOCUMENT / NOTEBOOK CUES
     if dnn_is_document:
         evidence_score -= 0.50
 
     if is_ruled_paper:
         evidence_score -= 0.55
 
-    if is_periodic_document and white_paper_ratio > 0.65:
-        evidence_score -= 0.35
+    if is_periodic_document and white_paper_ratio > 0.70:
+        evidence_score -= 0.30
 
-    if white_paper_ratio > 0.75 and sat_std_dev < 22.0:
-        evidence_score -= 0.40
+    # Monochromatic blank flat paper penalty:
+    # Only penalize if it lacks contour boundaries AND has overwhelming white ratio AND near-zero color
+    if white_paper_ratio > 0.88 and sat_std_dev < 10.0 and (area_ratio < 0.08 or area_ratio > 0.96):
+        evidence_score -= 0.35
 
     final_score = max(0.0, min(1.0, round(evidence_score, 2)))
 
     # Determine validation status
-    if dnn_is_document or is_ruled_paper or (white_paper_ratio > 0.78 and sat_std_dev < 18.0):
+    if dnn_is_document or is_ruled_paper:
         status = "INVALID_PRODUCT_IMAGE"
         reason = f"Document / Paper input detected ({top_prediction_name}). Notebook ruling or flat document structure identified instead of product packaging."
         should_proceed = False
     elif final_score >= PRODUCT_CONFIDENCE_THRESHOLD:
         status = "VALID_PRODUCT"
-        reason = f"Sufficient physical product evidence verified ({top_prediction_name}). Packaging contours and color artwork detected."
+        reason = f"Sufficient physical product evidence verified ({top_prediction_name}). Packaging contours and visual artwork detected."
         should_proceed = True
     elif final_score < INCONCLUSIVE_THRESHOLD:
         status = "INVALID_PRODUCT_IMAGE"
@@ -280,7 +301,7 @@ def _analyze_strict_hybrid_evidence(img: np.ndarray) -> Dict[str, Any]:
         should_proceed = False
     else:
         status = "INCONCLUSIVE_INPUT"
-        reason = "Product packaging could not be reliably verified. Please capture a clear photo showing the complete product package."
+        reason = f"Product packaging evidence is inconclusive (Score: {final_score}). Please capture a clear photo showing the complete product package boundaries."
         should_proceed = False
 
     return {
