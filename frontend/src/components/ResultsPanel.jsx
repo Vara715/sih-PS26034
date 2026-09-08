@@ -211,11 +211,11 @@ export default function ResultsPanel({ scanData, isLoading }) {
             <table className="audit-table">
               <thead>
                 <tr>
-                  <th>Rule Clause</th>
-                  <th>Declaration Field</th>
-                  <th>Status</th>
-                  <th>Extracted Evidence</th>
-                  <th>Explanation</th>
+                  <th style={{ minWidth: '100px', whiteSpace: 'nowrap' }}>Rule Clause</th>
+                  <th style={{ minWidth: '130px' }}>Declaration Field</th>
+                  <th style={{ minWidth: '95px', whiteSpace: 'nowrap' }}>Status</th>
+                  <th style={{ minWidth: '180px' }}>Extracted Evidence</th>
+                  <th style={{ minWidth: '220px' }}>Explanation</th>
                 </tr>
               </thead>
               <tbody>
@@ -239,8 +239,8 @@ export default function ResultsPanel({ scanData, isLoading }) {
                           <IconComp size={12} /> {rule.status}
                         </span>
                       </td>
-                      <td style={{ fontFamily: 'monospace', fontSize: '0.82rem', color: '#0f172a', fontWeight: '600' }}>
-                        <div>
+                      <td style={{ minWidth: '180px', fontFamily: 'monospace', fontSize: '0.82rem', color: '#0f172a', fontWeight: '600', wordBreak: 'break-word' }}>
+                        <div style={{ lineHeight: '1.35', marginBottom: '3px' }}>
                           {rule.evidence_text || <em style={{ color: '#94a3b8', fontStyle: 'italic', fontWeight: '400' }}>Not detected</em>}
                         </div>
                         {rule.source === 'gemini' && (
